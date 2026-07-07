@@ -1,0 +1,14 @@
+﻿# 前端
+node_modules/
+dist/
+
+# Firebase Functions（獨立子專案）
+functions/node_modules/
+functions/lib/
+
+# Firebase CLI 快取
+.firebase/
+
+# 其他
+*.log
+.DS_Store

@@ -1,0 +1,48 @@
+自動完成從建立 .gitignore 到推上 GitHub 
+
+# 1. 建立 .gitignore
+@"
+node_modules/
+dist/
+functions/node_modules/
+functions/lib/
+.firebase/
+*.log
+.DS_Store
+"@ | Out-File -Encoding utf8 .gitignore
+
+# 2. 設定 Git 身分（如果這台電腦沒設過，換成你自己的資訊）
+git config --global user.email "reso950211zxc@gmail.com"
+git config --global user.name "Jerry-Yu-Abyss"
+
+# 3. 初始化並推送
+git init
+git add .
+git commit -m "初始化 YaBuy Vue+Firebase 專案"
+git branch -M main
+git remote add origin https://github.com/Jerry-Yu-Abyss/yabuy-v2.git
+git push -u origin main
+
+
+在 Mac 上還原 Vue+Firebase 專案
+
+# 1. 進入你想存放專案的資料夾（依你實際路徑調整）
+cd ~/Desktop
+
+# 2. 把倉庫 clone 下來
+git clone https://github.com/Jerry-Yu-Abyss/yabuy-vue.git
+
+# 3. 進入專案資料夾
+cd yabuy-vue
+
+# 4. 還原前端套件
+npm install
+
+# 5. 還原 Cloud Functions 套件，並重新編譯
+cd functions
+npm install
+npm run build
+cd ..
+
+# 6. 跑起來驗證
+npm run dev
