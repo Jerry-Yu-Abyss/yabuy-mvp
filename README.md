@@ -88,6 +88,10 @@ git pull
 npm install        # 若這次更新有新增套件才需要
 ```
 
+### C. 還原指定檔案
+```bash
+git restore <path>
+```
 ---
 
 ## 四、部署上線（讓使用者看到新版）
