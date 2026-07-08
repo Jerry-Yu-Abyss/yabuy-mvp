@@ -237,6 +237,8 @@ onUnmounted(() => unsubscribe?.());
   gap: 12px; 
   border-bottom: 1px solid rgba(0,0,0,0.03); 
   z-index: 10;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
 }
 
 .sub-filter-group {
@@ -248,12 +250,22 @@ onUnmounted(() => unsubscribe?.());
 .horizontal-scroll { 
   display: flex; 
   overflow-x: auto; 
-  padding: 0 16px; 
+  /* 🌟 修復：將原本的 padding 移除，改用 gap 和虛擬元素撐開空間，避免截斷 */
+  padding: 5px 0; 
   gap: 10px; 
   scrollbar-width: none; 
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
 }
 .horizontal-scroll::-webkit-scrollbar { display: none; }
 
+/* 🌟 修復：在頭尾加上虛擬元素，確保放大時不會被邊界切斷 */
+.horizontal-scroll::before,
+.horizontal-scroll::after {
+  content: '';
+  flex-shrink: 0;
+  width: 10px; /* 相當於原本的 padding 大小 */
+}
 .filter-pill {
   flex-shrink: 0; 
   padding: 8px 20px; 
@@ -263,7 +275,7 @@ onUnmounted(() => unsubscribe?.());
   font-weight: 800; 
   color: #777; 
   transition: 0.2s cubic-bezier(0.25, 1, 0.5, 1); 
-  border: 1px solid #eee; 
+  border: 3px solid #eee; 
   cursor: pointer;
 }
 .filter-pill.active { 
