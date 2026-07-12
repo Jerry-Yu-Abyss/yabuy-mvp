@@ -344,7 +344,7 @@ html, body, #app {
   position: absolute;
   left: 0; right: 0; bottom: 0;
   z-index: 50;
-  padding: 0 16px calc(env(safe-area-inset-bottom, 0px) + 4px);
+  padding: 0 16px calc(env(safe-area-inset-bottom, 0px) + 0px);
   background: transparent;
   pointer-events: none;   /* 讓玻璃周圍空白不擋觸控 */
 }
@@ -389,7 +389,7 @@ html, body, #app {
 }
 
 /* Dock 懸浮後，內容底部讓位避免被遮住 */
-.main-stage.has-dock { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+.main-stage.has-dock { padding-bottom: calc(89px + env(safe-area-inset-bottom, 0px)); }
 
 @media (prefers-reduced-motion: reduce) {
   .liquid-indicator { transition: none; }
