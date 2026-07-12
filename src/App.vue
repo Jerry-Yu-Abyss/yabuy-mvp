@@ -66,17 +66,12 @@
       class="footer-section" 
       v-show="dockVisible"
     >
-      <div 
-        ref="bottomMenuRef"
+      <div
         class="bottom-pill-menu"
-        @touchstart="onDragStart"
-        @touchmove="onDragMove"
-        @touchend="onDragEnd"
-        @touchcancel="onDragEnd"
-        @mousedown="onDragStart"
-        @mousemove="onDragMove"
-        @mouseup="onDragEnd"
-        @mouseleave="onDragEnd"
+        @pointerdown="onDockDown"
+        @pointermove="onDockMove"
+        @pointerup="onDockUp"
+        @pointercancel="onDockUp"
       >
         <div
           class="liquid-indicator"
@@ -84,12 +79,12 @@
           v-show="activeNavIndex !== -1"
           :style="indicatorStyle"
         ></div>
-        <div 
-          v-for="t in navTabs" 
-          :key="t.id" 
-          class="nav-tab" 
-          @click="activeTab = t.id" 
-          :class="{ active: activeTab === t.id }"
+        <div
+          v-for="(t, i) in navTabs"
+          :key="t.id"
+          class="nav-tab"
+          @click="onTabClick(t.id)"
+          :class="{ active: isDragging ? previewIndex === i : activeTab === t.id }"
         >
           <component :is="t.icon" />
           <span class="nav-label">{{ t.label }}</span>
@@ -237,125 +232,79 @@ const navTabs = [
   { id: 'user',   icon: IconUser,   label: '我的' }
 ];
 
-// ── 底部 Dock：iOS 液態玻璃指示器 + 可拖曳水滴效果（已修復點擊跳動 + 吸附問題） ──
+// ── 底部 Dock：iOS 液態玻璃指示器 ──
 const dockVisible = computed(() => activeTab.value !== 'map' && activeTab.value !== 'admin');
 const activeNavIndex = computed(() => navTabs.findIndex(t => t.id === activeTab.value));
 const dockStretch = ref(false);
 let dockTimer = null;
-
-// 拖曳狀態
-const bottomMenuRef = ref(null);
-const isDragging = ref(false);
-const currentDragX = ref(0);
-const dragOffset = ref(0);
-const dragStartLeft = ref(0);
-
-const indicatorStyle = computed(() => {
-  const baseWidth = (100 / navTabs.length) + '%';
-  let transformStr = 'translateX(0%) scaleX(1)';
-
-  if (isDragging.value && bottomMenuRef.value) {
-    const totalW = bottomMenuRef.value.offsetWidth || 320;
-    const tabW = totalW / navTabs.length;
-    let leftPx = currentDragX.value;
-    const minLeft = 0;
-    const maxLeft = totalW - tabW;
-
-    if (leftPx < minLeft) {
-      leftPx = minLeft + (leftPx - minLeft) * 0.3;
-    } else if (leftPx > maxLeft) {
-      leftPx = maxLeft + (leftPx - maxLeft) * 0.3;
-    }
-
-    const percent = (leftPx / totalW) * 100;
-    transformStr = `translateX(${percent}%) scaleX(1.08)`;
-  } else {
-    const idx = activeNavIndex.value;
-    if (idx >= 0) {
-      transformStr = `translateX(${idx * 100}%) scaleX(${dockStretch.value ? 1.18 : 1})`;
-    }
-  }
-
-  return {
-    width: baseWidth,
-    transform: transformStr
-  };
+watch(activeNavIndex, (n, o) => {
+  if (n === -1 || o === -1 || n === o) return;
+  dockStretch.value = true;      // 移動中輕微拉伸（液態感）
+  clearTimeout(dockTimer);
+  dockTimer = setTimeout(() => { dockStretch.value = false; }, 240);
 });
 
-const onDragStart = (e) => {
-  if (activeNavIndex.value === -1 || !bottomMenuRef.value) return;
+// ── Dock 拖曳選取：像拖動一滴水 ──
+const isDragging = ref(false);
+const dragX = ref(0);          // 拖曳中水滴左緣位置（px）
+const dragMenuW = ref(0);      // 拖曳當下的選單寬度
+let dragArmed = false;         // 按下但尚未確立為拖曳
+let dragStartX = 0;
+let dragRectLeft = 0;
+let suppressClick = false;
+const DRAG_THRESHOLD = 8;      // px：小於此值視為輕點，保護一般點選
 
-  isDragging.value = true;
-  dockStretch.value = false;
-  clearTimeout(dockTimer);
+const slotW = () => dragMenuW.value / navTabs.length;
+const clampX = (x) => Math.min(Math.max(x, 0), dragMenuW.value - slotW());
 
-  const rect = bottomMenuRef.value.getBoundingClientRect();
-  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-  const pointerX = clientX - rect.left;
+const previewIndex = computed(() => {
+  if (!isDragging.value || !dragMenuW.value) return -1;
+  const idx = Math.floor((dragX.value + slotW() / 2) / slotW());
+  return Math.min(navTabs.length - 1, Math.max(0, idx));
+});
 
-  const tabW = rect.width / navTabs.length;
-  const currentLeft = activeNavIndex.value * tabW;
+const indicatorStyle = computed(() => {
+  const width = (100 / navTabs.length) + '%';
+  if (isDragging.value) {
+    // 跟著手指：微壓扁、微拉寬，像被拖著走的液體
+    return { width, transform: `translateX(${dragX.value}px) scaleX(1.1) scaleY(0.92)` };
+  }
+  return { width, transform: `translateX(${activeNavIndex.value * 100}%) scaleX(${dockStretch.value ? 1.16 : 1})` };
+});
 
-  dragStartLeft.value = currentLeft;
-  dragOffset.value = pointerX - currentLeft;
-  currentDragX.value = currentLeft;
-
-  if (e.cancelable) e.preventDefault();
+const onDockDown = (e) => {
+  if (activeNavIndex.value === -1) return;   // 目前不在底部分頁（如信箱）時不啟動
+  const rect = e.currentTarget.getBoundingClientRect();
+  dragRectLeft = rect.left;
+  dragMenuW.value = rect.width;
+  dragStartX = e.clientX;
+  dragArmed = true;
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* 舊瀏覽器忽略 */ }
 };
 
-const onDragMove = (e) => {
-  if (!isDragging.value || !bottomMenuRef.value) return;
-
-  const rect = bottomMenuRef.value.getBoundingClientRect();
-  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-  const pointerX = clientX - rect.left;
-
-  currentDragX.value = pointerX - dragOffset.value;
-
-  if (e.cancelable) e.preventDefault();
+const onDockMove = (e) => {
+  if (!dragArmed) return;
+  if (!isDragging.value) {
+    if (Math.abs(e.clientX - dragStartX) < DRAG_THRESHOLD) return;  // 還在輕點容差內
+    isDragging.value = true;    // 超過閾值 → 確立為拖曳
+  }
+  dragX.value = clampX(e.clientX - dragRectLeft - slotW() / 2);     // 水滴置中於指尖
 };
 
-const onDragEnd = (e) => {
-  if (!isDragging.value || !bottomMenuRef.value) {
-    isDragging.value = false;
-    return;
+const onDockUp = () => {
+  if (isDragging.value) {
+    const idx = previewIndex.value;            // 先取吸附目標再收拖曳狀態
+    if (idx !== -1) activeTab.value = navTabs[idx].id;
+    isDragging.value = false;                  // 移除 .dragging → 彈簧動畫吸附到位
+    suppressClick = true;                      // 擋掉拖曳結束後的殘餘 click
+    setTimeout(() => { suppressClick = false; }, 300);
   }
+  dragArmed = false;
+};
 
-  isDragging.value = false;
-
-  const totalW = bottomMenuRef.value.offsetWidth;
-  const tabW = totalW / navTabs.length;
-  const finalLeft = currentDragX.value;
-  const moved = Math.abs(finalLeft - dragStartLeft.value);
-
-  // 移動距離很小 → 視為純點擊，不執行吸附（避免點擊時跳動）
-  if (moved < 14) {
-    currentDragX.value = 0;
-    dragOffset.value = 0;
-    dragStartLeft.value = 0;
-    return;
-  }
-
-  // 真的有拖曳 → 吸附到最近的 tab
-  let closestIdx = Math.round(finalLeft / tabW);
-  closestIdx = Math.max(0, Math.min(closestIdx, navTabs.length - 1));
-
-  const targetTabId = navTabs[closestIdx].id;
-
-  if (targetTabId !== activeTab.value) {
-    activeTab.value = targetTabId;
-    dockStretch.value = true;
-    clearTimeout(dockTimer);
-    dockTimer = setTimeout(() => { dockStretch.value = false; }, 280);
-  } else {
-    dockStretch.value = true;
-    clearTimeout(dockTimer);
-    dockTimer = setTimeout(() => { dockStretch.value = false; }, 160);
-  }
-
-  currentDragX.value = 0;
-  dragOffset.value = 0;
-  dragStartLeft.value = 0;
+const onTabClick = (id) => {
+  if (suppressClick) return;
+  activeTab.value = id;
 };
 </script>
 
@@ -472,22 +421,19 @@ html, body, #app {
   width: 100%; height: 68px; border-radius: 28px;
   display: flex; justify-content: space-around; align-items: center;
   pointer-events: auto;
+  touch-action: none;              /* 拖曳手勢交給 JS，不觸發頁面捲動 */
   background: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(22px) saturate(1.6);
   -webkit-backdrop-filter: blur(22px) saturate(1.6);
   border: 1px solid rgba(255, 255, 255, 0.65);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.75);
   overflow: hidden;
-  touch-action: pan-x;
-  -webkit-touch-callout: none;
 }
-
 .nav-tab {
   cursor: pointer; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 3px; flex: 1; height: 100%;
   position: relative; z-index: 1;
 }
-
 .nav-tab svg { width: 23px; height: 23px; color: #9a9a9a; transition: 0.2s; }
 .nav-label { font-size: 10px; font-weight: 700; color: #9a9a9a; transition: 0.2s; }
 .nav-tab.active svg { color: #2f4a3a; transform: scale(1.1); }
@@ -497,14 +443,10 @@ html, body, #app {
 .liquid-indicator {
   position: absolute; top: 7px; bottom: 7px; left: 0;
   z-index: 0; pointer-events: none;
-  transition: transform 0.48s cubic-bezier(0.32, 1.25, 0.38, 1);
+  transition: transform 0.5s cubic-bezier(0.3, 1.4, 0.42, 1);
   will-change: transform;
 }
-
-.liquid-indicator.dragging {
-  transition: transform 0.03s linear;
-}
-
+.liquid-indicator.dragging { transition: none; }  /* 拖曳中 1:1 跟手，放開才恢復彈簧 */
 .liquid-indicator::before {
   content: '';
   position: absolute; inset: 0 8px;
