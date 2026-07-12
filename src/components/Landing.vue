@@ -218,10 +218,11 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
   --glass: rgba(255,255,255,.55);
 
   position: relative;
-  min-height: 100dvh;              /* 手機動態視窗高，避開網址列遮擋 */
+  height: 100vh;                   /* 舊瀏覽器 fallback */
+  height: 100dvh;                  /* 固定高度 → Landing 自己成為捲動容器 */
   width: 100%;
   overflow-x: hidden;
-  overflow-y: auto;                /* 明確允許垂直捲動 */
+  overflow-y: auto;                /* 內容在 Landing 內部捲動，不受外層 overflow:hidden 影響 */
   -webkit-overflow-scrolling: touch;  /* iOS 慣性捲動 */
   overscroll-behavior-y: contain;
   background: var(--paper);
@@ -231,10 +232,9 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 
 /* ── 流體 blob 背景 ── */
 .blobs {
-  position: absolute; inset: 0; height: 100%;
+  position: fixed; inset: 0;
   z-index: 0; pointer-events: none;
   filter: blur(60px);
-  overflow: hidden;
 }
 .blob { position: absolute; border-radius: 46% 54% 60% 40% / 50% 42% 58% 50%; opacity: .75; }
 .b1 { width: 46vmax; height: 46vmax; top: -14vmax; left: -12vmax; background: var(--green);  animation: drift1 26s ease-in-out infinite alternate; }
