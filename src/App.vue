@@ -48,7 +48,7 @@
     </header>
 
     <!-- 主內容區塊 -->
-    <main class="main-stage">
+    <main class="main-stage" :class="{ 'has-dock': dockVisible }">
       <keep-alive>
         <Home v-if="activeTab === 'radar'" />
         <Funnel v-else-if="activeTab === 'funnel'" :search-query="searchQuery" @clear-search="searchQuery = ''" />
@@ -64,9 +64,17 @@
 
     <footer 
       class="footer-section" 
-      v-show="activeTab !== 'map' && activeTab !== 'admin'"
+      v-show="dockVisible"
     >
       <div class="bottom-pill-menu">
+        <div
+          class="liquid-indicator"
+          v-show="activeNavIndex !== -1"
+          :style="{
+            width: (100 / navTabs.length) + '%',
+            transform: `translateX(${activeNavIndex * 100}%) scaleX(${dockStretch ? 1.16 : 1})`
+          }"
+        ></div>
         <div 
           v-for="t in navTabs" 
           :key="t.id" 
@@ -219,6 +227,18 @@ const navTabs = [
   { id: 'book',   icon: IconBook,   label: '教科書' },
   { id: 'user',   icon: IconUser,   label: '我的' }
 ];
+
+// ── 底部 Dock：iOS 液態玻璃指示器 ──
+const dockVisible = computed(() => activeTab.value !== 'map' && activeTab.value !== 'admin');
+const activeNavIndex = computed(() => navTabs.findIndex(t => t.id === activeTab.value));
+const dockStretch = ref(false);
+let dockTimer = null;
+watch(activeNavIndex, (n, o) => {
+  if (n === -1 || o === -1 || n === o) return;
+  dockStretch.value = true;      // 移動中輕微拉伸（液態感）
+  clearTimeout(dockTimer);
+  dockTimer = setTimeout(() => { dockStretch.value = false; }, 240);
+});
 </script>
 
 <style>
@@ -240,6 +260,7 @@ html, body, #app {
    佈局與響應式設計 (RWD) 
    ==================== */
 .native-app-container {
+  position: relative;
   /* 【響應式升級】不再寫死 100vw，而是限制最大寬度以適應桌機與平板 */
   width: 100%; 
   max-width: 500px; 
@@ -318,23 +339,59 @@ html, body, #app {
 /* ==================== 
    底部導覽列 
    ==================== */
-.footer-section { 
-  flex-shrink: 0; 
-  padding: 5px 16px env(safe-area-inset-bottom, 15px); 
-  background-color: #f6f8f4;
+.footer-section {
+  /* 懸浮 Dock：浮在內容之上，內容從玻璃底下滑過 */
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 50;
+  padding: 0 16px calc(env(safe-area-inset-bottom, 0px) + 4px);
+  background: transparent;
+  pointer-events: none;   /* 讓玻璃周圍空白不擋觸控 */
 }
 
-.bottom-pill-menu { 
-  width: 100%; height: 68px; background: #fff; border-radius: 28px; 
-  display: flex; justify-content: space-around; align-items: center; 
-  box-shadow: 0 4px 20px rgba(0,0,0,0.06); 
+.bottom-pill-menu {
+  position: relative;
+  width: 100%; height: 68px; border-radius: 28px;
+  display: flex; justify-content: space-around; align-items: center;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(22px) saturate(1.6);
+  -webkit-backdrop-filter: blur(22px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  overflow: hidden;
 }
-.nav-tab { 
-  cursor: pointer; display: flex; flex-direction: column; 
-  align-items: center; justify-content: center; gap: 3px; flex: 1; height: 100%; 
+.nav-tab {
+  cursor: pointer; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 3px; flex: 1; height: 100%;
+  position: relative; z-index: 1;
 }
 .nav-tab svg { width: 23px; height: 23px; color: #9a9a9a; transition: 0.2s; }
 .nav-label { font-size: 10px; font-weight: 700; color: #9a9a9a; transition: 0.2s; }
-.nav-tab.active svg { color: #1a1a1a; transform: scale(1.1); }
-.nav-tab.active .nav-label { color: #1a1a1a; }
+.nav-tab.active svg { color: #2f4a3a; transform: scale(1.1); }
+.nav-tab.active .nav-label { color: #2f4a3a; font-weight: 800; }
+
+/* ── 液態玻璃滑動指示器 ── */
+.liquid-indicator {
+  position: absolute; top: 7px; bottom: 7px; left: 0;
+  z-index: 0; pointer-events: none;
+  transition: transform 0.5s cubic-bezier(0.3, 1.4, 0.42, 1);
+  will-change: transform;
+}
+.liquid-indicator::before {
+  content: '';
+  position: absolute; inset: 0 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.35)), rgba(172, 198, 177, 0.5);
+  background-blend-mode: overlay;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 14px rgba(47, 74, 58, 0.16), inset 0 1px 1px rgba(255,255,255,0.9), inset 0 -6px 12px rgba(172,198,177,0.35);
+}
+
+/* Dock 懸浮後，內容底部讓位避免被遮住 */
+.main-stage.has-dock { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-indicator { transition: none; }
+}
 </style>
