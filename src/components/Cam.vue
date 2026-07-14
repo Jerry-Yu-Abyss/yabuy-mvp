@@ -277,16 +277,18 @@ const resetForm = () => {
   width: 100%; height: 100%;
   display: flex; justify-content: center; align-items: center;
   padding: 14px; box-sizing: border-box; overflow-y: auto;
+  background: #f6f8f4;
 }
 .upload-card {
   width: 100%; max-width: 400px;
   background: #fff; border-radius: 32px;
   display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+  box-shadow: 0 20px 48px rgba(47, 74, 58, 0.16), 0 6px 16px rgba(47, 74, 58, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.7);
 }
 .img-zone {
   flex-shrink: 0; height: 200px;
-  background: #f1f0ee; position: relative;
+  background: #eef3ec; position: relative;
   display: flex; justify-content: center; align-items: center;
   cursor: pointer; overflow: hidden;
 }
