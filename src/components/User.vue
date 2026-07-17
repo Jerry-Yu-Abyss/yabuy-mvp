@@ -37,6 +37,9 @@
 
       <nav class="history-tabs-container">
         <div class="history-tabs">
+          <div class="tab-item" :class="{ active: currentTab === 'fav' }" @click="currentTab = 'fav'">
+            喜愛
+          </div>
           <div class="tab-item" :class="{ active: currentTab === 'bought' }" @click="currentTab = 'bought'">
             已買商品
           </div>
@@ -54,8 +57,8 @@
               <img v-if="item.url" :src="item.url" class="card-img" />
               <div v-else class="color-placeholder" :style="{ background: item.color || '#f1f0ee' }"></div>
               
-              <div class="status-overlay" :class="currentTab === 'bought' ? 'bought' : (item.status === 'sold' ? 'sold' : 'active')">
-                {{ currentTab === 'bought' ? '已入庫' : (item.status === 'sold' ? '已售出' : '販售中') }}
+              <div class="status-overlay" :class="overlayClass(item)">
+                {{ overlayText(item) }}
               </div>
             </div>
 
@@ -75,14 +78,23 @@
                   <span>下架</span>
                 </button>
               </div>
+
+              <div class="card-mgmt-bar" v-else-if="currentTab === 'fav'">
+                <button class="mgmt-bar-btn trade-btn" @click.stop="openTrade(item)">
+                  <span>發起交易</span>
+                </button>
+                <button class="mgmt-bar-btn unfav-btn" @click.stop="removeFavorite(item)">
+                  <span>移除</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
         <div v-else class="modern-empty">
           <div class="empty-visual"><div class="empty-box">📦</div></div>
-          <h3 class="empty-title">這裡空空的...</h3>
-          <p class="empty-desc">開始您的校園交易之旅吧！</p>
+          <h3 class="empty-title">{{ currentTab === 'fav' ? '還沒有收藏' : '這裡空空的...' }}</h3>
+          <p class="empty-desc">{{ currentTab === 'fav' ? '在首頁看到心動的商品，點愛心收藏起來吧！' : '開始您的校園交易之旅吧！' }}</p>
         </div>
         <div class="bottom-spacer"></div>
       </div>
@@ -218,6 +230,13 @@
         </div>
       </Transition>
     </Teleport>
+
+    <TradeModal
+      v-if="selectedProduct"
+      :product="selectedProduct"
+      @close="selectedProduct = null"
+      @submit="handleTradeRequest"
+    />
   </div>
 </template>
 
@@ -228,9 +247,10 @@ import { toast, confirmDialog } from './toast.js';
 
 const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23d1d9c6'/%3E%3Ccircle cx='50' cy='40' r='17' fill='%23ffffff'/%3E%3Cpath d='M22 84c0-16 12-27 28-27s28 11 28 27z' fill='%23ffffff'/%3E%3C/svg%3E";
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDoc, getDoc, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDoc, getDoc, getDocs, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { subjectData } from './Subject.js'; 
 import { productCategories } from './Categories.js';
+import TradeModal from './TradeModal.vue';
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
@@ -239,8 +259,13 @@ const isAdmin = ref(false);
 const currentTab = ref('sold'); 
 const mySoldItems = ref([]);   
 const myBoughtItems = ref([]); 
+const myFavorites = ref([]);
 let unsubscribeSold = null;
 let unsubscribeBought = null;
+let unsubscribeFav = null;
+
+// 交易彈窗（沿用 Heart.vue 的 TradeModal 流程）
+const selectedProduct = ref(null);
 
 const isEditing = ref(false);
 const editForm = ref({ id: '', name: '', price: '', desc: '', isBook: false, category: '', college: '', dept: '', subject: '' });
@@ -299,7 +324,14 @@ const handleLogout = () => signOut(auth);
 const fetchMyRecords = () => {
   if (unsubscribeSold) unsubscribeSold();
   if (unsubscribeBought) unsubscribeBought();
+  if (unsubscribeFav) unsubscribeFav();
   if (!props.user) return;
+
+  // 喜愛清單（與 Heart.vue 同一份 favorites 資料）
+  const qFav = query(collection(db, "favorites"), where("userId", "==", props.user.uid), orderBy("createdAt", "desc"));
+  unsubscribeFav = onSnapshot(qFav, (s) => {
+    myFavorites.value = s.docs.map(d => ({ id: d.id, ...d.data() }));
+  }, (err) => { console.error("[User] 讀取收藏失敗（檢查索引/規則）：", err); });
 
   const qSold = query(collection(db, "products"), where("sellerId", "==", props.user.uid), orderBy("createdAt", "desc"));
   unsubscribeSold = onSnapshot(qSold, (s) => {
@@ -348,6 +380,8 @@ watch(() => props.user, (newVal) => {
     isAdmin.value = false;
     mySoldItems.value = [];
     myBoughtItems.value = [];
+    myFavorites.value = [];
+    selectedProduct.value = null;
     myRating.value = { avg: 0, count: 0 };
   }
 }, { immediate: true });
@@ -395,10 +429,73 @@ const openBookPicker = () => {
 };
 const toggleBookMode = () => { editForm.value.isBook = !editForm.value.isBook; editForm.value.category = editForm.value.isBook ? '教科書' : ''; if (editForm.value.isBook && !editForm.value.dept) showBookPicker.value = true; };
 
-onUnmounted(() => { unsubscribeSold?.(); unsubscribeBought?.(); });
+onUnmounted(() => { unsubscribeSold?.(); unsubscribeBought?.(); unsubscribeFav?.(); });
 
-const displayItems = computed(() => currentTab.value === 'sold' ? mySoldItems.value : myBoughtItems.value);
-const indicatorStyle = computed(() => ({ transform: currentTab.value === 'bought' ? 'translateX(0)' : 'translateX(100%)' }));
+const displayItems = computed(() => {
+  if (currentTab.value === 'fav')  return myFavorites.value;
+  if (currentTab.value === 'sold') return mySoldItems.value;
+  return myBoughtItems.value;
+});
+
+// 三格滑桿：喜愛(0) / 已買商品(1) / 我的賣場(2)
+const TAB_ORDER = ['fav', 'bought', 'sold'];
+const indicatorStyle = computed(() => ({
+  transform: `translateX(${TAB_ORDER.indexOf(currentTab.value) * 100}%)`
+}));
+
+const overlayClass = (item) => {
+  if (currentTab.value === 'fav')    return 'fav';
+  if (currentTab.value === 'bought') return 'bought';
+  return item.status === 'sold' ? 'sold' : 'active';
+};
+const overlayText = (item) => {
+  if (currentTab.value === 'fav')    return '收藏中';
+  if (currentTab.value === 'bought') return '已入庫';
+  return item.status === 'sold' ? '已售出' : '販售中';
+};
+
+// ── 收藏卡：發起交易（沿用 Heart.vue 的守門與欄位對應） ──
+const openTrade = (fav) => {
+  if (!fav.productId) {
+    toast('此收藏資料較舊、缺少商品資訊，請移除後到首頁重新收藏一次。');
+    return;
+  }
+  selectedProduct.value = {
+    id:         fav.productId,
+    name:       fav.name,
+    price:      fav.price,
+    url:        fav.url || '',
+    color:      fav.color || '#acc6b1',
+    sellerId:   fav.sellerId || '',
+    sellerName: fav.sellerName || '校園賣家'
+  };
+};
+
+const handleTradeRequest = async (tradeInfo) => {
+  if (!auth.currentUser) return;
+  try {
+    await addDoc(collection(db, "orders"), {
+      ...tradeInfo,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.error("[User] 訂單寫入失敗:", e);
+    toast("發送失敗，請稍後再試。");
+  }
+};
+
+const removeFavorite = async (fav) => {
+  const ok = await confirmDialog(`確定要將「${fav.name}」從喜愛清單移除嗎？`);
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "favorites", fav.id));
+    toast("已從喜愛清單移除。");
+  } catch (e) {
+    console.error("[User] 移除收藏失敗:", e);
+    toast("移除失敗，請稍後再試。");
+  }
+};
 </script>
 
 <style scoped>
@@ -433,9 +530,9 @@ const indicatorStyle = computed(() => ({ transform: currentTab.value === 'bought
 
 .history-tabs-container { padding: 0 24px; flex-shrink: 0; }
 .history-tabs { position: relative; background: rgba(0,0,0,0.04); height: 48px; border-radius: 16px; display: flex; padding: 4px; }
-.tab-item { flex: 1; z-index: 2; display: flex; justify-content: center; align-items: center; font-size: 14px; font-weight: 700; color: #7f8c8d; cursor: pointer; }
+.tab-item { flex: 1; z-index: 2; display: flex; justify-content: center; align-items: center; font-size: 13px; font-weight: 700; color: #7f8c8d; cursor: pointer; white-space: nowrap; transition: color 0.2s; }
 .tab-item.active { color: #fff; }
-.tab-indicator { position: absolute; top: 4px; left: 4px; width: calc(50% - 4px); height: calc(100% - 8px); background: #333; border-radius: 12px; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+.tab-indicator { position: absolute; top: 4px; left: 4px; width: calc(33.333% - 2.667px); height: calc(100% - 8px); background: #333; border-radius: 12px; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
 
 .items-scroll-area { flex: 1; overflow-y: auto; padding: 20px 20px 140px; }
 .user-product-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px 14px; }
@@ -447,6 +544,7 @@ const indicatorStyle = computed(() => ({ transform: currentTab.value === 'bought
 .status-overlay.bought { background: rgba(90,148,97,0.15); color: #3d7a45; }
 .status-overlay.active { background: rgba(90,148,97,0.15); color: #3d7a45; }
 .status-overlay.sold { background: rgba(0,0,0,0.55); color: #fff; }
+.status-overlay.fav { background: rgba(231,76,60,0.14); color: #c0392b; }
 
 .card-content { padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .product-title { font-size: 14px; font-weight: 800; color: #2c3e50; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -459,6 +557,12 @@ const indicatorStyle = computed(() => ({ transform: currentTab.value === 'bought
 .mgmt-bar-btn { flex: 1; height: 34px; border-radius: 10px; border: none; font-size: 11px; font-weight: 800; cursor: pointer; transition: 0.2s; }
 .edit-btn { background: #f1f0ee; color: #666; }
 .delete-btn { background: #fff1f0; color: #e74c3c; }
+
+/* 喜愛卡片：發起交易 / 移除收藏 */
+.trade-btn { flex: 1.6; background: #2f4a3a; color: #fff; }
+.trade-btn:hover { background: #3d5f4a; }
+.unfav-btn { background: #f1f0ee; color: #888; }
+.unfav-btn:hover { background: #e8e6e3; }
 .mgmt-bar-btn:active { transform: scale(0.96); }
 
 .login-modern-wrapper { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #f8faf5; padding: 30px; }
