@@ -68,11 +68,17 @@
 </template>
 
 <script setup>
-import { reactive, computed, ref } from 'vue';
+import { reactive, computed, ref, onMounted, onUnmounted } from 'vue';
 import { auth, db } from '@/firebase';
 import { toast } from './toast.js';
+import { isTradeModalOpen } from './modalState.js';
 import { collection, addDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import SendSuccessAnimation from './SendSuccessAnimation.vue';
+
+// 彈窗掛載＝正在開啟，卸載＝已關閉。App.vue 讀這個共享狀態來收起底部選單，
+// 不需要每個開啟本元件的父頁面各自 emit 通知。
+onMounted(() => { isTradeModalOpen.value = true; });
+onUnmounted(() => { isTradeModalOpen.value = false; });
 
 const props = defineProps(['product']);
 const emit = defineEmits(['close', 'submit']);
