@@ -84,7 +84,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue';
+import { ref, reactive, computed, watch, onUnmounted } from 'vue';
+import { registerModalOpen, registerModalClose } from './modalState.js';
 import IconCamera from '@/assets/icons/camera.svg?component';
 import { subjectData } from './Subject.js';
 import { productCategories } from './Categories.js';
@@ -114,6 +115,15 @@ const form = reactive({
 });
 
 const showBookPicker = ref(false);
+
+// 選學系分類彈窗開關時同步通知共享計數器，讓 App.vue 收起/恢復底部選單
+// （做法與 User.vue 的 isEditing 一致：頁面內部 ref 切換，非獨立元件掛載/卸載）
+watch(showBookPicker, (open) => {
+  if (open) registerModalOpen();
+  else registerModalClose();
+});
+// 若元件在選單開著時就被卸載（例如切換分頁未先關閉），補一次釋放，避免計數卡住
+onUnmounted(() => { if (showBookPicker.value) registerModalClose(); });
 const tempCollege = ref('');
 const tempDept = ref('');
 const tempSubject = ref('');
