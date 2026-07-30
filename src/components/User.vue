@@ -251,6 +251,7 @@ import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDo
 import { subjectData } from './Subject.js'; 
 import { productCategories } from './Categories.js';
 import TradeModal from './TradeModal.vue';
+import { registerModalOpen, registerModalClose } from './modalState.js';
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
@@ -269,6 +270,16 @@ const selectedProduct = ref(null);
 
 const isEditing = ref(false);
 const editForm = ref({ id: '', name: '', price: '', desc: '', isBook: false, category: '', college: '', dept: '', subject: '' });
+
+// 「編輯項目」彈窗開關時同步通知共享計數器，讓 App.vue 收起/恢復底部選單。
+// （TradeModal 是獨立元件用 v-if 掛載/卸載即可自報；isEditing 只是頁面內部 ref 切換，
+//  所以改用 watch 監看開關時機來對接同一套機制。）
+watch(isEditing, (open) => {
+  if (open) registerModalOpen();
+  else registerModalClose();
+});
+// 若元件在編輯彈窗開著時就被卸載（例如切換分頁時未先關閉），補一次釋放，避免計數卡住。
+onUnmounted(() => { if (isEditing.value) registerModalClose(); });
 
 const checkAdminStatus = async () => {
   if (!props.user || !auth.currentUser) {

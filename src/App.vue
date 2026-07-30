@@ -98,7 +98,7 @@
 import { ref, watch, onMounted, computed } from 'vue'; 
 import { auth, db } from './firebase';
 import { toast } from './components/toast.js';
-import { isTradeModalOpen } from './components/modalState.js';
+import { isAnyModalOpen } from './components/modalState.js';
 import ToastHost from './components/ToastHost.vue';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
@@ -237,7 +237,7 @@ const navTabs = [
 const dockVisible = computed(() =>
   activeTab.value !== 'map' &&
   activeTab.value !== 'admin' &&
-  !isTradeModalOpen.value   // 發起交易的彈窗開著時，收起底部選單，釋放操作空間
+  !isAnyModalOpen.value     // 有任何全螢幕彈窗（發起交易、編輯商品等）開著時，收起底部選單
 );
 const activeNavIndex = computed(() => navTabs.findIndex(t => t.id === activeTab.value));
 const dockStretch = ref(false);

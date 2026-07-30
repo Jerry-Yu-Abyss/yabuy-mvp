@@ -183,7 +183,7 @@ onUnmounted(() => {
 
 .glass-header {
   position: sticky; top: 0; z-index: 100;
-  padding: 20px 24px;
+  padding: calc(env(safe-area-inset-top, 44px) + 12px) 24px 20px;
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid rgba(0, 0, 0, 0.03);

@@ -281,7 +281,7 @@
                       <span class="r-name">{{ o.productName || '未命名商品' }}</span>
                       <span class="r-buyer">買家: {{ o.buyerName || '未知' }}</span>
                     </div>
-                    <span class="r-price">${{ o.finalPrice ?? o.productPrice ?? 0 }}</span>
+                    <span class="r-price">${{ o.price }}</span>
                   </div>
                   <div v-if="targetUserOrders.length === 0" class="empty-record">目前尚未賣出任何商品</div>
                 </div>
@@ -646,7 +646,7 @@ onUnmounted(() => {
 /* ==================== 基礎佈局樣式 ==================== */
 .admin-page-root { position: absolute; inset: 0; background-color: #f4f6f8; display: flex; flex-direction: column; z-index: 200; font-family: -apple-system, sans-serif; }
 .admin-header { background: #1a1a1a; color: #fff; padding-bottom: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
-.header-top { display: flex; align-items: center; justify-content: space-between; padding: 50px 20px 12px; }
+.header-top { display: flex; align-items: center; justify-content: space-between; padding: calc(env(safe-area-inset-top, 44px) + 6px) 20px 12px; }
 .back-btn-pill { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; cursor: pointer; transition: 0.2s; }
 .back-btn-pill:active { background: rgba(255,255,255,0.3); }
 .header-title { font-size: 19px; font-weight: 900; letter-spacing: 1px; }

@@ -211,7 +211,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import DealPage from './Deal.vue';
 import { auth, db } from '@/firebase'; 
-import { toast, confirmDialog } from './toast.js';
 import { collection, query, where, onSnapshot, orderBy, updateDoc, doc, serverTimestamp } from 'firebase/firestore'; 
 import { onAuthStateChanged } from 'firebase/auth'; 
 
@@ -303,8 +302,8 @@ const startNegotiate = (order) => {
 
 const submitNegotiate = async (order) => {
   const step = order.negotiationStep || 0;
-  if (activeTab.value === 'sell' && step >= 1) return toast("賣家僅限改期一次。");
-  if (activeTab.value === 'buy' && step >= 2) return toast("買家僅限改期一次。");
+  if (activeTab.value === 'sell' && step >= 1) return alert("賣家僅限改期一次。");
+  if (activeTab.value === 'buy' && step >= 2) return alert("買家僅限改期一次。");
 
   order.isSubmitting = true; 
   try {
@@ -320,7 +319,7 @@ const submitNegotiate = async (order) => {
     order.isSubmitting = false;
     order.isEditing = false;
   } catch (e) {
-    toast("發送失敗，請重試。");
+    alert("發送失敗，請重試。");
     order.isSubmitting = false;
   }
 };
@@ -330,14 +329,13 @@ const acceptOrder = async (order) => {
   try {
     await updateDoc(doc(db, "orders", order.id), { status: 'accepted', updatedAt: serverTimestamp() });
     console.log('%c[Mailbox]', 'color:#1976d2;font-weight:bold;', '✅ 訂單已設為 accepted');
-    toast("✅ 預約成立！");
-  } catch (e) { console.warn('[Mailbox] 🔥 接受訂單失敗：', e.code, e.message); toast("操作失敗"); }
+    alert("✅ 預約成立！");
+  } catch (e) { console.warn('[Mailbox] 🔥 接受訂單失敗：', e.code, e.message); alert("操作失敗"); }
 };
 
 const rejectOrder = async (order) => {
-  if (await confirmDialog("確定取消預約？")) {
+  if (confirm("確定取消預約？")) {
     await updateDoc(doc(db, "orders", order.id), { status: 'rejected', updatedAt: serverTimestamp() });
-    toast("✅ 已取消預約");
   }
 };
 
@@ -429,7 +427,7 @@ onUnmounted(() => {
 /* 以下為你原本的樣式，完全保留不變 */
 .mailbox-page-root { position: absolute; inset: 0; background-color: #f6f8f5; display: flex; flex-direction: column; }
 .mailbox-header { background: rgba(246, 248, 245, 0.9); backdrop-filter: blur(10px); padding-bottom: 12px; }
-.header-top { display: flex; align-items: center; justify-content: space-between; padding: 55px 20px 10px; }
+.header-top { display: flex; align-items: center; justify-content: space-between; padding: calc(env(safe-area-inset-top, 44px) + 10px) 20px 10px; }
 .back-btn-circle { width: 32px; height: 32px; border-radius: 50%; background: #fff; border: 1px solid #eee; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
 .header-title { font-size: 20px; font-weight: 850; color: #1a1a1a; }
 
