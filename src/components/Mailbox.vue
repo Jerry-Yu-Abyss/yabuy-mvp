@@ -85,10 +85,19 @@
 
         <div v-if="filteredOrders.length > 0" class="order-cards-stack">
           <div v-for="order in filteredOrders" :key="order.id" class="order-card-modern">
-            
+
             <div class="card-meta">
               <span class="status-badge" :class="order.status">{{ statusText(order.status) }}</span>
-              <span class="time-stamp">{{ formatTime(order.createdAt) }}</span>
+              <div class="meta-right">
+                <span class="time-stamp">{{ formatTime(order.createdAt) }}</span>
+                <button
+                  v-if="canCancel(order)"
+                  type="button"
+                  class="card-cancel-btn"
+                  title="取消請求"
+                  @click.stop="cancelOrder(order)"
+                >✕</button>
+              </div>
             </div>
             
             <div class="card-main">
@@ -339,6 +348,26 @@ const rejectOrder = async (order) => {
   }
 };
 
+// 買家自行取消尚未成立的請求（pending / negotiating）。
+// 沿用 rejectOrder 同一套 'rejected' 狀態 —— statusText 已把它顯示為「已取消」，
+// 買家取消、賣家婉拒本來就是同一種結果，沒必要另開一個狀態值。
+const canCancel = (order) =>
+  activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
+
+const cancelOrder = async (order) => {
+  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？`)) return;
+  try {
+    await updateDoc(doc(db, "orders", order.id), {
+      status: 'rejected',
+      lastActionBy: 'buyer',
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.error('[Mailbox] 取消請求失敗：', e.code, e.message);
+    alert("取消失敗，請重試。");
+  }
+};
+
 const statusText = (s) => ({ pending: '等待中', negotiating: '協商中', accepted: '預約成立', rejected: '已取消', failed: '交易失敗', completed: '✅ 已完成' }[s] || s);
 const formatTime = (ts) => { if (!ts) return ''; const d = ts.toDate(); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`; };
 const selectedDeal = ref(null);
@@ -439,6 +468,16 @@ onUnmounted(() => {
 .message-list-area { flex: 1; overflow-y: auto; padding: 16px 20px 120px; }
 .order-cards-stack { display: flex; flex-direction: column; }
 .order-card-modern { background: #fff; border-radius: 30px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 25px rgba(0,0,0,0.03); display: flex; flex-direction: column; gap: 16px; }
+
+.meta-right { display: flex; align-items: center; gap: 10px; }
+.card-cancel-btn {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  background: #f5f5f5; border: none; color: #999;
+  font-size: 11px; font-weight: 800; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.card-cancel-btn:active { background: #ececec; color: #666; }
 
 .card-meta { display: flex; justify-content: space-between; align-items: center; }
 .status-badge { padding: 5px 12px; border-radius: 10px; font-size: 11px; font-weight: 800; }
