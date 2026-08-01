@@ -340,6 +340,7 @@ import { subjectData } from './Subject.js';
 import { productCategories } from './Categories.js';
 import TradeModal from './TradeModal.vue';
 import { registerModalOpen, registerModalClose } from './modalState.js';
+import { resolveVerifyStatus } from './verify.js';
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
@@ -436,6 +437,11 @@ const authErrorMessage = async (error, email) => {
 const upsertUserDoc = async (fbUser) => {
   const userRef = doc(db, 'users', fbUser.uid);
   const userSnap = await getDoc(userRef);
+  // 由登入方式與信箱驗證狀態推導 verify（google / email / not_yet）。
+  // 建立與更新都寫入，讓欄位每次登入都刷新，盡量貼近最新狀態（作為紀錄用途）。
+  // 注意：即時的交易守門是讀 Auth 現況（TradeModal 的 ensureVerified），不依賴這個欄位，
+  //       所以「使用者剛驗證完、尚未再次登入」時，交易仍會正確放行、不受此欄位過期影響。
+  const verify = resolveVerifyStatus(fbUser);
   if (!userSnap.exists()) {
     await setDoc(userRef, {
       id: fbUser.uid,
@@ -443,13 +449,15 @@ const upsertUserDoc = async (fbUser) => {
       email: fbUser.email,
       photoURL: fbUser.photoURL || '',
       status: 'active',
+      verify,
       createdAt: serverTimestamp(),
       lastLogin: serverTimestamp()
     });
   } else {
     await updateDoc(userRef, {
       lastLogin: serverTimestamp(),
-      photoURL: fbUser.photoURL || userSnap.data().photoURL || ''
+      photoURL: fbUser.photoURL || userSnap.data().photoURL || '',
+      verify
     });
   }
 };

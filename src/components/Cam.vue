@@ -91,6 +91,7 @@ import { subjectData } from './Subject.js';
 import { productCategories } from './Categories.js';
 
 import { auth, db, storage } from '@/firebase';
+import { sendEmailVerification } from 'firebase/auth';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -141,6 +142,23 @@ const tempSubjects = computed(() => {
 const requireLogin = () => {
   if (!auth.currentUser) {
     alert("🔒 系統提示：\n請先前往右下角「會員」頁面登入，才能發布商品喔！");
+    return false;
+  }
+  return true;
+};
+
+// 上架前要求信箱已驗證（Google 登入的帳號視同已驗證，不受影響）
+const requireVerified = () => {
+  if (auth.currentUser && auth.currentUser.emailVerified === false) {
+    const wantResend = confirm(
+      "📩 請先驗證您的電子郵件，才能發布商品。\n\n" +
+      "是否要重新寄送驗證信到您的信箱？"
+    );
+    if (wantResend) {
+      sendEmailVerification(auth.currentUser)
+        .then(() => alert("驗證信已寄出，請至信箱查收後再回來上架。"))
+        .catch(() => alert("寄送失敗，請稍後再試。"));
+    }
     return false;
   }
   return true;
@@ -235,6 +253,7 @@ const compressImage = (img, callback) => {
 
 const firebaseUpload = async () => {
   if (!requireLogin()) return;
+  if (!requireVerified()) return;
   const user = auth.currentUser;
 
   if (!form.name.trim()) { alert('請填寫商品名稱'); return; }
