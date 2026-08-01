@@ -16,8 +16,8 @@
       <div class="safe-area-spacer"></div>
       
       <nav class="top-nav-bar" v-show="!['user', 'camera'].includes(activeTab)">
-        <button class="icon-btn" @click="activeTab = 'map'">
-          <IconMap />
+        <button class="icon-btn" @click="showList = true">
+          <IconList />
         </button>
 
         <div class="search-container">
@@ -36,8 +36,8 @@
           </div>
         </div>
         
-        <button class="icon-btn" @click="activeTab = 'heart'">
-          <IconHeart :class="{ 'active-heart': activeTab === 'heart' }" />
+        <button class="icon-btn" @click="activeTab = 'map'">
+          <IconMap />
         </button>
         
         <button class="icon-btn mailbox-btn" @click="activeTab = 'mailbox'">
@@ -91,6 +91,11 @@
         </div>
       </div>
     </footer>
+
+    <!-- 功能選單：由左側滑入，蓋滿整個 App 容器（含底部 Dock） -->
+    <Transition name="slide-panel">
+      <List v-if="showList" @close="showList = false" @select="onListSelect" />
+    </Transition>
   </div>
 </template>
 
@@ -116,11 +121,12 @@ import Mailbox from './components/Mailbox.vue';
 import AdminPage from './components/Admin.vue';
 import Onboarding from './components/Onboarding.vue';
 import Landing from './components/Landing.vue';
+import List from './components/List.vue';
 
 // 匯入圖標
 import IconMap from '@/assets/icons/map.svg?component';
+import IconList from '@/assets/icons/list.svg?component';
 import IconSearch from '@/assets/icons/search.svg?component';
-import IconHeart from '@/assets/icons/heart.svg?component';
 import IconMailbox from '@/assets/icons/mailbox.svg?component';
 import IconRadar from '@/assets/icons/radar.svg?component';
 import IconFunnel from '@/assets/icons/funnel.svg?component';
@@ -129,8 +135,16 @@ import IconBook from '@/assets/icons/book.svg?component';
 import IconUser from '@/assets/icons/user.svg?component';
 
 const activeTab = ref('radar');
-const searchQuery = ref(''); 
-const currentUser = ref(null); 
+const searchQuery = ref('');
+const currentUser = ref(null);
+
+// 功能選單（List.vue）：獨立於 activeTab，以覆蓋層呈現
+const showList = ref(false);
+const onListSelect = (key) => {
+  // 個人資料（名字 / 頭像）目前顯示在「我的」頁，先導向該頁
+  if (key === 'profile') activeTab.value = 'user';
+  showList.value = false;
+};
 
 const showOnboarding = ref(false);
 try { showOnboarding.value = localStorage.getItem('yabuy_onboarded') !== '1'; } catch (e) { showOnboarding.value = true; }
