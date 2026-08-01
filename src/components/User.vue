@@ -11,6 +11,13 @@
           </button>
         </div>
         
+        <div v-if="showVerifyBanner" class="verify-banner">
+          <span>📩 您的電子郵件尚未驗證</span>
+          <button type="button" @click="handleResendVerification" :disabled="resendingVerify">
+            {{ resendingVerify ? '寄送中…' : '重新寄送驗證信' }}
+          </button>
+        </div>
+
         <div class="profile-main">
           <div class="avatar-container">
             <img :src="user.photoURL || DEFAULT_AVATAR" class="avatar-img" />
@@ -122,6 +129,82 @@
               <span>使用 Google 帳號登入</span>
             </button>
             <p class="auth-hint">安全加密登入，保護您的校園帳號</p>
+
+            <div class="email-divider" v-if="!showEmailForm">
+              <span>或</span>
+            </div>
+            <button
+              v-if="!showEmailForm"
+              class="email-toggle-btn"
+              type="button"
+              @click="showEmailForm = true"
+            >
+              使用電子郵件{{ authMode === 'register' ? '註冊' : '登入' }}
+            </button>
+
+            <form
+              v-else
+              class="email-form"
+              @submit.prevent="handleEmailAuth"
+            >
+              <input
+                v-model.trim="emailInput"
+                type="email"
+                autocomplete="email"
+                class="email-input"
+                placeholder="電子郵件"
+                required
+              />
+              <input
+                v-model="passwordInput"
+                type="password"
+                :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
+                class="email-input"
+                placeholder="密碼（至少 6 碼）"
+                minlength="6"
+                required
+              />
+              <input
+                v-if="authMode === 'register'"
+                v-model="confirmPasswordInput"
+                type="password"
+                autocomplete="new-password"
+                class="email-input"
+                placeholder="確認密碼"
+                minlength="6"
+                required
+              />
+
+              <button
+                type="submit"
+                class="email-submit-btn"
+                :disabled="emailSubmitting"
+              >
+                {{ emailSubmitting ? '處理中…' : (authMode === 'register' ? '註冊帳號' : '登入') }}
+              </button>
+
+              <div class="email-form-links">
+                <button
+                  type="button"
+                  class="link-btn"
+                  @click="toggleAuthMode"
+                >
+                  {{ authMode === 'register' ? '已經有帳號？改為登入' : '還沒有帳號？改為註冊' }}
+                </button>
+                <button
+                  v-if="authMode === 'login'"
+                  type="button"
+                  class="link-btn"
+                  @click="handleForgotPassword"
+                >
+                  忘記密碼？
+                </button>
+              </div>
+
+              <button type="button" class="email-cancel-btn" @click="closeEmailForm">
+                返回其他登入方式
+              </button>
+            </form>
           </div>
         </div>
 
@@ -246,7 +329,12 @@ import { auth, googleProvider, db } from '@/firebase';
 import { toast, confirmDialog } from './toast.js';
 
 const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23d1d9c6'/%3E%3Ccircle cx='50' cy='40' r='17' fill='%23ffffff'/%3E%3Cpath d='M22 84c0-16 12-27 28-27s28 11 28 27z' fill='%23ffffff'/%3E%3C/svg%3E";
-import { signInWithPopup, signOut } from 'firebase/auth';
+import {
+  signInWithPopup, signOut,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  sendEmailVerification, sendPasswordResetEmail,
+  fetchSignInMethodsForEmail
+} from 'firebase/auth';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDoc, getDoc, getDocs, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { subjectData } from './Subject.js'; 
 import { productCategories } from './Categories.js';
@@ -281,6 +369,146 @@ watch(isEditing, (open) => {
 // 若元件在編輯彈窗開著時就被卸載（例如切換分頁時未先關閉），補一次釋放，避免計數卡住。
 onUnmounted(() => { if (isEditing.value) registerModalClose(); });
 
+// ── 電子郵件登入 / 註冊 ──
+const showEmailForm = ref(false);
+const authMode = ref('login');           // 'login' | 'register'
+const emailInput = ref('');
+const passwordInput = ref('');
+const confirmPasswordInput = ref('');
+const emailSubmitting = ref(false);
+const resendingVerify = ref(false);
+
+// 已登入但信箱尚未驗證時顯示提示（Google 登入的信箱視同已驗證，不顯示）
+const showVerifyBanner = computed(() =>
+  !!props.user && props.user.emailVerified === false
+);
+
+const toggleAuthMode = () => {
+  authMode.value = authMode.value === 'login' ? 'register' : 'login';
+  passwordInput.value = '';
+  confirmPasswordInput.value = '';
+};
+
+const closeEmailForm = () => {
+  showEmailForm.value = false;
+  authMode.value = 'login';
+  emailInput.value = '';
+  passwordInput.value = '';
+  confirmPasswordInput.value = '';
+};
+
+// Firebase 錯誤代碼 → 友善中文訊息
+const authErrorMessage = async (error, email) => {
+  const code = error?.code || '';
+  switch (code) {
+    case 'auth/email-already-in-use': {
+      try {
+        const methods = await fetchSignInMethodsForEmail(auth, email);
+        if (methods.includes('google.com')) {
+          return '此信箱已使用 Google 帳號登入過，請改用 Google 登入。';
+        }
+      } catch (e) { /* 忽略查詢失敗，走預設訊息 */ }
+      return '此信箱已經註冊過了，請直接登入，或使用「忘記密碼」重設。';
+    }
+    case 'auth/invalid-email':
+      return '電子郵件格式不正確，請確認後再試一次。';
+    case 'auth/weak-password':
+      return '密碼強度不足，請至少設定 6 碼。';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found': {
+      try {
+        const methods = await fetchSignInMethodsForEmail(auth, email);
+        if (methods.includes('google.com') && !methods.includes('password')) {
+          return '此信箱原本是用 Google 登入註冊的，請改用 Google 登入。';
+        }
+      } catch (e) { /* 忽略查詢失敗，走預設訊息 */ }
+      return '帳號或密碼不正確，請確認後再試一次。';
+    }
+    case 'auth/too-many-requests':
+      return '嘗試次數過多，請稍後再試。';
+    default:
+      return '發生錯誤，請稍後再試一次。';
+  }
+};
+
+// 沿用 handleLogin 既有的「寫入/更新 users 文件」模式
+const upsertUserDoc = async (fbUser) => {
+  const userRef = doc(db, 'users', fbUser.uid);
+  const userSnap = await getDoc(userRef);
+  if (!userSnap.exists()) {
+    await setDoc(userRef, {
+      id: fbUser.uid,
+      displayName: fbUser.displayName || fbUser.email?.split('@')[0] || '校園用戶',
+      email: fbUser.email,
+      photoURL: fbUser.photoURL || '',
+      status: 'active',
+      createdAt: serverTimestamp(),
+      lastLogin: serverTimestamp()
+    });
+  } else {
+    await updateDoc(userRef, {
+      lastLogin: serverTimestamp(),
+      photoURL: fbUser.photoURL || userSnap.data().photoURL || ''
+    });
+  }
+};
+
+const handleEmailAuth = async () => {
+  if (authMode.value === 'register' && passwordInput.value !== confirmPasswordInput.value) {
+    toast('兩次輸入的密碼不一致，請重新確認。');
+    return;
+  }
+  emailSubmitting.value = true;
+  try {
+    if (authMode.value === 'register') {
+      const result = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+      await upsertUserDoc(result.user);
+      try { await sendEmailVerification(result.user); } catch (e) { /* 寄送失敗不擋註冊流程 */ }
+      toast('註冊成功！我們已寄送驗證信到您的信箱。');
+    } else {
+      const result = await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+      await upsertUserDoc(result.user);
+    }
+    closeEmailForm();
+  } catch (error) {
+    console.error('Email 登入/註冊失敗:', error);
+    const msg = await authErrorMessage(error, emailInput.value);
+    toast(msg);
+  } finally {
+    emailSubmitting.value = false;
+  }
+};
+
+const handleForgotPassword = async () => {
+  if (!emailInput.value) {
+    toast('請先在上方欄位輸入您的電子郵件。');
+    return;
+  }
+  try {
+    await sendPasswordResetEmail(auth, emailInput.value);
+    toast('重設密碼信已寄出，請至信箱查收。');
+  } catch (error) {
+    console.error('寄送重設密碼信失敗:', error);
+    const msg = await authErrorMessage(error, emailInput.value);
+    toast(msg);
+  }
+};
+
+const handleResendVerification = async () => {
+  if (!auth.currentUser) return;
+  resendingVerify.value = true;
+  try {
+    await sendEmailVerification(auth.currentUser);
+    toast('驗證信已重新寄出，請至信箱查收。');
+  } catch (error) {
+    console.error('重寄驗證信失敗:', error);
+    toast('寄送失敗，請稍後再試。');
+  } finally {
+    resendingVerify.value = false;
+  }
+};
+
 const checkAdminStatus = async () => {
   if (!props.user || !auth.currentUser) {
     isAdmin.value = false;
@@ -298,34 +526,13 @@ const checkAdminStatus = async () => {
 const handleLogin = async () => {
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    const loggedInUser = result.user;
-
-    const userRef = doc(db, 'users', loggedInUser.uid);
-    const userSnap = await getDoc(userRef);
-
-    if (!userSnap.exists()) {
-      await setDoc(userRef, {
-        id: loggedInUser.uid,
-        displayName: loggedInUser.displayName || '校園用戶',
-        email: loggedInUser.email,
-        photoURL: loggedInUser.photoURL || '',
-        status: 'active', 
-        createdAt: serverTimestamp(),
-        lastLogin: serverTimestamp()
-      });
-      console.log("✅ 新使用者資料已成功寫入資料庫！");
-    } else {
-      await updateDoc(userRef, {
-        lastLogin: serverTimestamp(),
-        photoURL: loggedInUser.photoURL 
-      });
-      console.log("✅ 既有使用者，已更新登入時間！");
-    }
-
+    await upsertUserDoc(result.user);
   } catch (error) {
     console.error("登入出錯:", error.message);
     if (error.code === 'auth/popup-blocked') {
       toast("請允許瀏覽器彈出視窗以完成 Google 登入。");
+    } else if (error.code === 'auth/account-exists-with-different-credential') {
+      toast('此信箱已使用電子郵件密碼註冊過，請改用電子郵件登入。');
     }
   }
 };
@@ -586,6 +793,50 @@ const removeFavorite = async (fav) => {
 .logo-y { color: #fff; font-size: 32px; font-weight: 900; }
 .google-signin-btn { width: 100%; height: 56px; background: #fff; border: 1px solid #ddd; border-radius: 18px; display: flex; justify-content: center; align-items: center; gap: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
 .google-signin-btn:active { background: #f9f9f9; transform: scale(0.98); }
+
+/* ── 電子郵件登入 ── */
+.email-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 14px; color: #aab3ac; font-size: 12px; font-weight: 700; }
+.email-divider::before, .email-divider::after { content: ''; flex: 1; height: 1px; background: #e4e9e2; }
+
+.email-toggle-btn {
+  width: 100%; height: 50px; background: transparent; border: 1.5px solid #acc6b1;
+  border-radius: 16px; color: #2f4a3a; font-weight: 800; font-size: 14px; cursor: pointer; transition: 0.2s;
+}
+.email-toggle-btn:active { background: rgba(172,198,177,0.15); }
+
+.email-form { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; text-align: left; }
+.email-input {
+  width: 100%; height: 48px; padding: 0 16px; border-radius: 14px; border: 1.5px solid #e4e9e2;
+  background: #fff; font-size: 14px; color: #2f4a3a; box-sizing: border-box; transition: 0.2s;
+}
+.email-input:focus { outline: none; border-color: #acc6b1; }
+
+.email-submit-btn {
+  width: 100%; height: 50px; margin-top: 4px; background: #2f4a3a; color: #fff;
+  border: none; border-radius: 16px; font-weight: 800; font-size: 14px; cursor: pointer; transition: 0.2s;
+}
+.email-submit-btn:active { transform: scale(0.98); }
+.email-submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.email-form-links { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
+.link-btn { background: none; border: none; padding: 4px 0; font-size: 12px; font-weight: 700; color: #7f8c8d; cursor: pointer; text-decoration: underline; }
+
+.email-cancel-btn {
+  width: 100%; height: 36px; margin-top: 6px; background: none; border: none;
+  font-size: 12px; color: #b0b7b3; cursor: pointer;
+}
+
+/* ── 信箱未驗證提示 ── */
+.verify-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgba(242, 217, 140, 0.25); border: 1px solid rgba(242, 217, 140, 0.6);
+  border-radius: 14px; padding: 10px 14px; margin: 0 0 14px; font-size: 12px; font-weight: 700; color: #7a5c1e;
+}
+.verify-banner button {
+  flex-shrink: 0; background: #2f4a3a; color: #fff; border: none; border-radius: 10px;
+  padding: 6px 12px; font-size: 11px; font-weight: 800; cursor: pointer;
+}
+.verify-banner button:disabled { opacity: 0.6; }
 
 .modern-sheet-overlay {
   position: fixed;

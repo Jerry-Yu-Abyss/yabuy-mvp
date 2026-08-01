@@ -39,6 +39,9 @@
           </button>
           <a class="cta-sub" href="#pwa">如何安裝到手機 ↓</a>
         </div>
+        <button class="email-entry" type="button" @click="openEmailModal">
+          或使用電子郵件登入 / 註冊
+        </button>
         <p v-if="loginError" class="login-error">{{ loginError }}</p>
       </div>
 
@@ -137,18 +140,67 @@
       <button class="cta-main big" @click="handleGoogleLogin" :disabled="loggingIn">
         {{ loggingIn ? '登入中…' : '用 Google 登入 YaBuy' }}
       </button>
+      <button class="email-entry center" type="button" @click="openEmailModal">
+        或使用電子郵件登入 / 註冊
+      </button>
     </section>
 
     <footer class="foot">
       YaBuy · 亞洲大學校園二手循環平台
     </footer>
+
+    <!-- 電子郵件登入 / 註冊彈窗 -->
+    <div v-if="showEmailModal" class="em-overlay" @click.self="closeEmailModal">
+      <div class="em-card">
+        <button class="em-close" type="button" @click="closeEmailModal">✕</button>
+        <h3 class="em-title">{{ authMode === 'register' ? '建立帳號' : '電子郵件登入' }}</h3>
+
+        <form class="em-form" @submit.prevent="handleEmailAuth">
+          <input
+            v-model.trim="emailInput" type="email" autocomplete="email"
+            class="em-input" placeholder="電子郵件" required
+          />
+          <input
+            v-model="passwordInput" type="password"
+            :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
+            class="em-input" placeholder="密碼（至少 6 碼）" minlength="6" required
+          />
+          <input
+            v-if="authMode === 'register'"
+            v-model="confirmPasswordInput" type="password" autocomplete="new-password"
+            class="em-input" placeholder="確認密碼" minlength="6" required
+          />
+
+          <button type="submit" class="em-submit" :disabled="emailSubmitting">
+            {{ emailSubmitting ? '處理中…' : (authMode === 'register' ? '註冊帳號' : '登入') }}
+          </button>
+
+          <div class="em-links">
+            <button type="button" class="em-link" @click="toggleAuthMode">
+              {{ authMode === 'register' ? '已有帳號？改為登入' : '沒有帳號？改為註冊' }}
+            </button>
+            <button v-if="authMode === 'login'" type="button" class="em-link" @click="handleForgotPassword">
+              忘記密碼？
+            </button>
+          </div>
+
+          <p v-if="emailError" class="em-error">{{ emailError }}</p>
+        </form>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
-import { signInWithPopup } from 'firebase/auth';
-import { auth, googleProvider } from '@/firebase';
+import {
+  signInWithPopup,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  sendEmailVerification, sendPasswordResetEmail,
+  fetchSignInMethodsForEmail
+} from 'firebase/auth';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, googleProvider, db } from '@/firebase';
 
 const emit = defineEmits(['login-success']);
 
@@ -167,6 +219,123 @@ const handleGoogleLogin = async () => {
     }
   } finally {
     loggingIn.value = false;
+  }
+};
+
+/* ── 電子郵件登入 / 註冊（與 User.vue 同一套邏輯）── */
+const showEmailModal = ref(false);
+const authMode = ref('login');            // 'login' | 'register'
+const emailInput = ref('');
+const passwordInput = ref('');
+const confirmPasswordInput = ref('');
+const emailSubmitting = ref(false);
+const emailError = ref('');
+
+const openEmailModal = () => {
+  emailError.value = '';
+  authMode.value = 'login';
+  showEmailModal.value = true;
+};
+const closeEmailModal = () => {
+  showEmailModal.value = false;
+  emailInput.value = '';
+  passwordInput.value = '';
+  confirmPasswordInput.value = '';
+  emailError.value = '';
+};
+const toggleAuthMode = () => {
+  authMode.value = authMode.value === 'login' ? 'register' : 'login';
+  passwordInput.value = '';
+  confirmPasswordInput.value = '';
+  emailError.value = '';
+};
+
+const authErrorMessage = async (error, email) => {
+  const code = error?.code || '';
+  switch (code) {
+    case 'auth/email-already-in-use': {
+      try {
+        const methods = await fetchSignInMethodsForEmail(auth, email);
+        if (methods.includes('google.com')) return '此信箱已使用 Google 帳號登入過，請改用 Google 登入。';
+      } catch (e) { /* 忽略 */ }
+      return '此信箱已經註冊過了，請直接登入，或使用「忘記密碼」重設。';
+    }
+    case 'auth/invalid-email': return '電子郵件格式不正確，請確認後再試一次。';
+    case 'auth/weak-password': return '密碼強度不足，請至少設定 6 碼。';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found': {
+      try {
+        const methods = await fetchSignInMethodsForEmail(auth, email);
+        if (methods.includes('google.com') && !methods.includes('password')) {
+          return '此信箱原本是用 Google 登入註冊的，請改用 Google 登入。';
+        }
+      } catch (e) { /* 忽略 */ }
+      return '帳號或密碼不正確，請確認後再試一次。';
+    }
+    case 'auth/too-many-requests': return '嘗試次數過多，請稍後再試。';
+    default: return '發生錯誤，請稍後再試一次。';
+  }
+};
+
+const upsertUserDoc = async (fbUser) => {
+  const userRef = doc(db, 'users', fbUser.uid);
+  const userSnap = await getDoc(userRef);
+  if (!userSnap.exists()) {
+    await setDoc(userRef, {
+      id: fbUser.uid,
+      displayName: fbUser.displayName || fbUser.email?.split('@')[0] || '校園用戶',
+      email: fbUser.email,
+      photoURL: fbUser.photoURL || '',
+      status: 'active',
+      createdAt: serverTimestamp(),
+      lastLogin: serverTimestamp()
+    });
+  } else {
+    await updateDoc(userRef, {
+      lastLogin: serverTimestamp(),
+      photoURL: fbUser.photoURL || userSnap.data().photoURL || ''
+    });
+  }
+};
+
+const handleEmailAuth = async () => {
+  if (authMode.value === 'register' && passwordInput.value !== confirmPasswordInput.value) {
+    emailError.value = '兩次輸入的密碼不一致，請重新確認。';
+    return;
+  }
+  emailSubmitting.value = true;
+  emailError.value = '';
+  try {
+    let result;
+    if (authMode.value === 'register') {
+      result = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+      await upsertUserDoc(result.user);
+      try { await sendEmailVerification(result.user); } catch (e) { /* 寄送失敗不擋流程 */ }
+    } else {
+      result = await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+      await upsertUserDoc(result.user);
+    }
+    closeEmailModal();
+    emit('login-success');     // 交給 App.vue 收掉 Landing、進入主畫面
+  } catch (error) {
+    console.error('Email 登入/註冊失敗:', error);
+    emailError.value = await authErrorMessage(error, emailInput.value);
+  } finally {
+    emailSubmitting.value = false;
+  }
+};
+
+const handleForgotPassword = async () => {
+  if (!emailInput.value) {
+    emailError.value = '請先在上方欄位輸入您的電子郵件。';
+    return;
+  }
+  try {
+    await sendPasswordResetEmail(auth, emailInput.value);
+    emailError.value = '重設密碼信已寄出，請至信箱查收。';
+  } catch (error) {
+    emailError.value = await authErrorMessage(error, emailInput.value);
   }
 };
 
@@ -219,10 +388,10 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 
   position: relative;
   height: 100vh;                   /* 舊瀏覽器 fallback */
-  height: 100dvh;                  /* 固定高度 → Landing 自己成為捲動容器 */
+  height: 100dvh;                  /* 固定高度 → Landing 自己成為內部捲動容器 */
   width: 100%;
   overflow-x: hidden;
-  overflow-y: auto;                /* 內容在 Landing 內部捲動，不受外層 overflow:hidden 影響 */
+  overflow-y: auto;                /* 內容在 Landing 內部捲動，不依賴外層 */
   -webkit-overflow-scrolling: touch;  /* iOS 慣性捲動 */
   overscroll-behavior-y: contain;
   background: var(--paper);
@@ -368,6 +537,52 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 .br-m { display: none; }
 
 .foot { position: relative; z-index: 1; text-align: center; font-size: 12px; opacity: .5; padding: 20px 0 34px; }
+
+/* ── 電子郵件登入入口 ── */
+.email-entry {
+  display: inline-block; margin-top: 14px; background: none; border: none;
+  color: var(--ink); opacity: .7; font-size: 14px; font-weight: 700;
+  text-decoration: underline; cursor: pointer; font-family: inherit;
+}
+.email-entry:hover { opacity: 1; }
+.email-entry.center { display: block; margin: 16px auto 0; }
+
+/* ── email 彈窗 ── */
+.em-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(47, 74, 58, 0.45); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.em-card {
+  position: relative; width: 100%; max-width: 380px;
+  background: #fff; border-radius: 28px; padding: 32px 26px 26px;
+  box-shadow: 0 24px 60px rgba(47, 74, 58, 0.3);
+  font-family: 'Noto Sans TC', system-ui, sans-serif;
+}
+.em-close {
+  position: absolute; top: 16px; right: 18px; background: none; border: none;
+  font-size: 18px; color: #b0b7b3; cursor: pointer;
+}
+.em-title {
+  font-family: 'LXGW WenKai TC', serif; font-size: 22px; color: var(--ink);
+  margin: 0 0 20px; text-align: center;
+}
+.em-form { display: flex; flex-direction: column; gap: 11px; }
+.em-input {
+  width: 100%; height: 50px; padding: 0 16px; box-sizing: border-box;
+  border: 1.5px solid #e4e9e2; border-radius: 14px; background: #fff;
+  font-size: 14px; color: var(--ink); transition: .2s;
+}
+.em-input:focus { outline: none; border-color: var(--green); }
+.em-submit {
+  width: 100%; height: 52px; margin-top: 4px; background: var(--ink); color: #fff;
+  border: none; border-radius: 16px; font-size: 15px; font-weight: 800; cursor: pointer; transition: .2s;
+}
+.em-submit:hover { background: #3d5f4a; }
+.em-submit:disabled { opacity: .6; cursor: not-allowed; }
+.em-links { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
+.em-link { background: none; border: none; padding: 4px 0; font-size: 12px; font-weight: 700; color: #7f8c8d; cursor: pointer; text-decoration: underline; }
+.em-error { margin: 6px 0 0; font-size: 13px; font-weight: 700; color: #b3423a; text-align: center; }
 
 /* 進場動畫 */
 .reveal { opacity: 0; transform: translateY(26px); transition: opacity .7s ease, transform .7s ease; }
