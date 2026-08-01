@@ -92,6 +92,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { db, auth } from '@/firebase'; 
 import { toast } from './toast.js';
+import { blockUnverifiedForTrade } from './verify.js';
 import { onAuthStateChanged } from 'firebase/auth'; 
 import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore'; 
 import IconSend from '@/assets/icons/send.svg?component';
@@ -284,14 +285,16 @@ const swipeCard = (dir) => {
 onMounted(() => { onAuthStateChanged(auth, initDataSync); });
 onUnmounted(() => { unsubscribeProducts?.(); unsubscribeFavorites?.(); });
 
-const openTrade = (item) => { 
-  if (!requireLogin()) return; 
+const openTrade = async (item) => { 
+  if (!requireLogin()) return;
+  if (!(await blockUnverifiedForTrade(auth.currentUser, toast))) return;
   selectedProduct.value = item; 
 };
 
 const handleTradeRequest = async (tradeInfo) => {
   const user = auth.currentUser;
   if (!user) return;
+  if (!(await blockUnverifiedForTrade(user, toast))) return;
   try {
     await addDoc(collection(db, "orders"), {
       ...tradeInfo,

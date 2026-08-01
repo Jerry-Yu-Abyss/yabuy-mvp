@@ -73,6 +73,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { db, auth } from '@/firebase'; 
 import { toast } from './toast.js';
+import { blockUnverifiedForTrade } from './verify.js';
 import { onAuthStateChanged } from 'firebase/auth'; // ✅ 新增導入
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, addDoc, serverTimestamp } from 'firebase/firestore';
 import TradeModal from './TradeModal.vue';
@@ -113,7 +114,7 @@ const handleRemoveFavorite = async (favId) => {
   }
 };
 
-const openTrade = (fav) => {
+const openTrade = async (fav) => {
   // ✅ 修正重點：fav.id 是「收藏文件」的 id，不是商品 id。
   //    必須改用 fav.productId 當商品 id，TradeModal 才能正確帶出
   //    productId（成交後自動下架要用）與比對賣家身分。
@@ -122,6 +123,7 @@ const openTrade = (fav) => {
     toast('此收藏資料較舊、缺少商品資訊，請移除後到首頁重新收藏一次。');
     return;
   }
+  if (!(await blockUnverifiedForTrade(auth.currentUser, toast))) return;
   selectedProduct.value = {
     id:         fav.productId,
     name:       fav.name,
@@ -136,6 +138,7 @@ const openTrade = (fav) => {
 const handleTradeRequest = async (tradeInfo) => {
   const user = auth.currentUser;
   if (!user) return;
+  if (!(await blockUnverifiedForTrade(user, toast))) return;
   try {
     await addDoc(collection(db, "orders"), {
       ...tradeInfo,

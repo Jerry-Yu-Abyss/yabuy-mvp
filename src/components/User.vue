@@ -332,7 +332,7 @@ const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/
 import {
   signInWithPopup, signOut,
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  sendEmailVerification, sendPasswordResetEmail,
+  sendPasswordResetEmail,
   fetchSignInMethodsForEmail
 } from 'firebase/auth';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDoc, getDoc, getDocs, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -340,7 +340,10 @@ import { subjectData } from './Subject.js';
 import { productCategories } from './Categories.js';
 import TradeModal from './TradeModal.vue';
 import { registerModalOpen, registerModalClose } from './modalState.js';
-import { resolveVerifyStatus } from './verify.js';
+import {
+  resolveVerifyStatus, isVerified, blockUnverifiedForTrade,
+  ensureVerified, sendVerificationThrottled
+} from './verify.js';
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
@@ -379,10 +382,22 @@ const confirmPasswordInput = ref('');
 const emailSubmitting = ref(false);
 const resendingVerify = ref(false);
 
-// 已登入但信箱尚未驗證時顯示提示（Google 登入的信箱視同已驗證，不顯示）
-const showVerifyBanner = computed(() =>
-  !!props.user && props.user.emailVerified === false
-);
+// 已登入但信箱尚未驗證時顯示提示（與 Firestore users.verify 判定一致）。
+// props.user 來自 App.vue 的 onAuthStateChanged，其 emailVerified 取自本機快取；
+// 使用者若在別的分頁 / 手機完成驗證，這個值會過期，橫幅就會一直掛著。
+// 因此進入頁面時用 ensureVerified() reload 一次，結果存進 verifiedNow 覆蓋判定。
+const verifiedNow = ref(null);   // null = 尚未查證，先沿用 props.user 的當下判定
+const showVerifyBanner = computed(() => {
+  if (!props.user) return false;
+  if (verifiedNow.value !== null) return !verifiedNow.value;
+  return !isVerified(resolveVerifyStatus(props.user));
+});
+
+const refreshVerifyState = async () => {
+  if (!auth.currentUser) { verifiedNow.value = null; return; }
+  const { ok } = await ensureVerified(auth.currentUser);
+  verifiedNow.value = ok;
+};
 
 const toggleAuthMode = () => {
   authMode.value = authMode.value === 'login' ? 'register' : 'login';
@@ -454,10 +469,14 @@ const upsertUserDoc = async (fbUser) => {
       lastLogin: serverTimestamp()
     });
   } else {
+    // 防降級：登入當下的 emailVerified 可能還是快取的舊值，
+    // 不可把資料庫裡已經正確的 email / google 覆寫回 not_yet
+    const current = userSnap.data().verify;
+    const keepCurrent = isVerified(current) && !isVerified(verify);
     await updateDoc(userRef, {
       lastLogin: serverTimestamp(),
       photoURL: fbUser.photoURL || userSnap.data().photoURL || '',
-      verify
+      verify: keepCurrent ? current : verify
     });
   }
 };
@@ -472,7 +491,8 @@ const handleEmailAuth = async () => {
     if (authMode.value === 'register') {
       const result = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
       await upsertUserDoc(result.user);
-      try { await sendEmailVerification(result.user); } catch (e) { /* 寄送失敗不擋註冊流程 */ }
+      // 用節流版本寄送並記下時間，避免註冊後馬上點交易又重寄一封、讓這封先失效
+      await sendVerificationThrottled(result.user);
       toast('註冊成功！我們已寄送驗證信到您的信箱。');
     } else {
       const result = await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
@@ -507,11 +527,16 @@ const handleResendVerification = async () => {
   if (!auth.currentUser) return;
   resendingVerify.value = true;
   try {
-    await sendEmailVerification(auth.currentUser);
-    toast('驗證信已重新寄出，請至信箱查收。');
-  } catch (error) {
-    console.error('重寄驗證信失敗:', error);
-    toast('寄送失敗，請稍後再試。');
+    // 走節流版本：連續重寄會讓前一封連結失效，反而害使用者點到過期的信
+    const { sent, waitMs, error } = await sendVerificationThrottled(auth.currentUser);
+    if (sent) {
+      toast('驗證信已重新寄出，請至信箱查收。');
+    } else if (waitMs > 0) {
+      toast(`驗證信剛剛才寄出，請先收信並點擊「最新一封」的連結。${Math.ceil(waitMs / 1000)} 秒後可再寄一次。`);
+    } else {
+      console.error('重寄驗證信失敗:', error);
+      toast('寄送失敗，請稍後再試。');
+    }
   } finally {
     resendingVerify.value = false;
   }
@@ -597,12 +622,14 @@ const fetchMyRating = async () => {
   }
 };
 
-watch(() => props.user, (newVal) => { 
+watch(() => props.user, (newVal) => {
   if (newVal && newVal.uid) {
     checkAdminStatus();
-    fetchMyRecords(); 
+    fetchMyRecords();
     fetchMyRating();
+    refreshVerifyState();
   } else {
+    verifiedNow.value = null;
     isAdmin.value = false;
     mySoldItems.value = [];
     myBoughtItems.value = [];
@@ -681,11 +708,12 @@ const overlayText = (item) => {
 };
 
 // ── 收藏卡：發起交易（沿用 Heart.vue 的守門與欄位對應） ──
-const openTrade = (fav) => {
+const openTrade = async (fav) => {
   if (!fav.productId) {
     toast('此收藏資料較舊、缺少商品資訊，請移除後到首頁重新收藏一次。');
     return;
   }
+  if (!(await blockUnverifiedForTrade(auth.currentUser, toast))) return;
   selectedProduct.value = {
     id:         fav.productId,
     name:       fav.name,
@@ -699,6 +727,7 @@ const openTrade = (fav) => {
 
 const handleTradeRequest = async (tradeInfo) => {
   if (!auth.currentUser) return;
+  if (!(await blockUnverifiedForTrade(auth.currentUser, toast))) return;
   try {
     await addDoc(collection(db, "orders"), {
       ...tradeInfo,

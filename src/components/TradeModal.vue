@@ -70,10 +70,9 @@
 <script setup>
 import { reactive, computed, ref, onMounted, onUnmounted } from 'vue';
 import { auth, db } from '@/firebase';
-import { sendEmailVerification } from 'firebase/auth';
 import { toast } from './toast.js';
 import { isAnyModalOpen, registerModalOpen, registerModalClose } from './modalState.js';
-import { ensureVerified } from './verify.js';
+import { blockUnverifiedForTrade } from './verify.js';
 import { collection, addDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import SendSuccessAnimation from './SendSuccessAnimation.vue';
 
@@ -117,15 +116,8 @@ const handleSend = async () => {
     return;
   }
 
-  // ✅ 信任防護：發起交易前要求已通過驗證（Google 登入視同已驗證）。
-  // 走共用的 ensureVerified()：會先 reload 拉最新狀態，剛點完驗證信的使用者不會被誤擋，
-  // 且與 User.vue 寫入 users 文件的 verify 判定同源，邏輯永遠一致。
-  const { ok: verifiedOk } = await ensureVerified(user);
-  if (!verifiedOk) {
-    toast("📩 請先驗證您的電子郵件，才能發起交易。已為您重新寄送驗證信。");
-    try { await sendEmailVerification(user); } catch (e) { /* 寄送失敗不影響提示 */ }
-    return;
-  }
+  // ✅ 信任防護：發起交易前要求 emailVerified（與 Firestore users.verify 同源判定）
+  if (!(await blockUnverifiedForTrade(user, toast))) return;
 
   if (!isTimeValid.value) {
     toast("⚠️ 安全提醒：非規定的面交時間（06:00 - 18:00），預約已被系統攔截。");

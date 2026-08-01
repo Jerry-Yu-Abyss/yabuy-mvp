@@ -61,6 +61,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { db, auth } from '@/firebase'; //
 import { toast } from './toast.js';
+import { blockUnverifiedForTrade } from './verify.js';
 import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
 import TradeModal from './TradeModal.vue';
 import { filterCategories } from './Categories.js';
@@ -136,17 +137,19 @@ const resetFilters = () => {
 };
 
 // 🌟 修改：點擊商品前先檢查登入狀態
-const openTrade = (product) => { 
+const openTrade = async (product) => { 
   if (!auth.currentUser) {
     toast("🔒 系統提示：\n請先前往右下角「會員」頁面登入，才能與賣家進行交易喔！");
     return;
   }
+  if (!(await blockUnverifiedForTrade(auth.currentUser, toast))) return;
   selectedProduct.value = product; 
 };
 
 const handleTradeRequest = async (tradeInfo) => {
   const user = auth.currentUser;
   if (!user) return;
+  if (!(await blockUnverifiedForTrade(user, toast))) return;
   try {
     await addDoc(collection(db, "orders"), {
       ...tradeInfo,

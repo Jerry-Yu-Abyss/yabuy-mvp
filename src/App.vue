@@ -102,6 +102,7 @@ import { isAnyModalOpen } from './components/modalState.js';
 import ToastHost from './components/ToastHost.vue';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { ensureVerified } from './components/verify.js';
 
 // 匯入子組件
 import Home from './components/Home.vue';
@@ -198,6 +199,11 @@ onMounted(() => {
       currentUser.value = user;
       bindBadgeListeners(user.uid);
       if (showLanding.value) dismissLanding();
+      // 每次 session 恢復時同步 verify。
+      // 交給 ensureVerified()：會先 reload() 取得最新 emailVerified 再回寫，
+      // 且內建防降級 —— 不會因為本機快取還沒更新，就把已驗證帳號打回 not_yet。
+      // 不 await：同步屬背景作業，內部已全程 try/catch，不阻塞畫面呈現。
+      ensureVerified(user);
     } else {
       currentUser.value = null;
       clearBadgeListeners();

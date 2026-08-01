@@ -100,6 +100,7 @@ import { db, auth } from '@/firebase';
 import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
 import { subjectData } from './Subject.js'; 
 import TradeModal from './TradeModal.vue';
+import { blockUnverifiedForTrade } from './verify.js';
 
 // --- 狀態管理 ---
 const books = ref([]);
@@ -180,17 +181,19 @@ const selectDept = (d) => {
   selectedSubject.value = d.subjects?.[0] || '';
 };
 
-const openTrade = (product) => { 
+const openTrade = async (product) => { 
   if (!auth.currentUser) {
     alert("🔒 系統提示：\n請先前往右下角「會員」頁面登入，才能與賣家進行交易喔！");
     return;
   }
+  if (!(await blockUnverifiedForTrade(auth.currentUser, (msg) => alert(msg)))) return;
   selectedProduct.value = product; 
 };
 
 const handleTradeRequest = async (tradeInfo) => {
   const user = auth.currentUser;
   if (!user) return;
+  if (!(await blockUnverifiedForTrade(user, (msg) => alert(msg)))) return;
   try {
     await addDoc(collection(db, "orders"), {
       ...tradeInfo,

@@ -196,11 +196,12 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import {
   signInWithPopup,
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  sendEmailVerification, sendPasswordResetEmail,
+  sendPasswordResetEmail,
   fetchSignInMethodsForEmail
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, googleProvider, db } from '@/firebase';
+import { resolveVerifyStatus, isVerified, sendVerificationThrottled } from './verify.js';
 
 const emit = defineEmits(['login-success']);
 
@@ -281,6 +282,9 @@ const authErrorMessage = async (error, email) => {
 const upsertUserDoc = async (fbUser) => {
   const userRef = doc(db, 'users', fbUser.uid);
   const userSnap = await getDoc(userRef);
+  // ✅ 建檔就必須寫入 verify —— Landing 是新使用者的主要入口，
+  //    這裡漏寫會讓帳號在 users 文件裡完全沒有 verify 欄位。
+  const verify = resolveVerifyStatus(fbUser);
   if (!userSnap.exists()) {
     await setDoc(userRef, {
       id: fbUser.uid,
@@ -288,13 +292,18 @@ const upsertUserDoc = async (fbUser) => {
       email: fbUser.email,
       photoURL: fbUser.photoURL || '',
       status: 'active',
+      verify,
       createdAt: serverTimestamp(),
       lastLogin: serverTimestamp()
     });
   } else {
+    // 既有帳號：沿用防降級規則，避免快取狀態把已驗證打回 not_yet
+    const current = userSnap.data().verify;
+    const keepCurrent = isVerified(current) && !isVerified(verify);
     await updateDoc(userRef, {
       lastLogin: serverTimestamp(),
-      photoURL: fbUser.photoURL || userSnap.data().photoURL || ''
+      photoURL: fbUser.photoURL || userSnap.data().photoURL || '',
+      verify: keepCurrent ? current : verify
     });
   }
 };
@@ -311,7 +320,8 @@ const handleEmailAuth = async () => {
     if (authMode.value === 'register') {
       result = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
       await upsertUserDoc(result.user);
-      try { await sendEmailVerification(result.user); } catch (e) { /* 寄送失敗不擋流程 */ }
+      // 用節流版本寄送並記下時間，避免註冊後馬上點交易又重寄一封、讓這封先失效
+      await sendVerificationThrottled(result.user);
     } else {
       result = await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
       await upsertUserDoc(result.user);
