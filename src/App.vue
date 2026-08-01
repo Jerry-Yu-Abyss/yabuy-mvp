@@ -94,13 +94,13 @@
 
     <!-- 功能選單：由左側滑入，蓋滿整個 App 容器（含底部 Dock） -->
     <Transition name="slide-panel">
-      <List v-if="showList" @close="showList = false" @select="onListSelect" />
+      <List v-if="showList" @close="showList = false" @saved="onProfileSaved" />
     </Transition>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, computed } from 'vue'; 
+import { ref, watch, onMounted, computed, triggerRef } from 'vue';
 import { auth, db } from './firebase';
 import { toast } from './components/toast.js';
 import { isAnyModalOpen } from './components/modalState.js';
@@ -140,11 +140,12 @@ const currentUser = ref(null);
 
 // 功能選單（List.vue）：獨立於 activeTab，以覆蓋層呈現
 const showList = ref(false);
-const onListSelect = (key) => {
-  // 個人資料（名字 / 頭像）目前顯示在「我的」頁，先導向該頁
-  if (key === 'profile') activeTab.value = 'user';
-  showList.value = false;
-};
+
+// List.vue 存檔後，Firebase 已直接改到 auth.currentUser 這個物件本身
+// （updateProfile 是原地修改，不是換一個新物件），Vue 的響應性追蹤不到這種
+// 「繞過 ref setter 的物件內部修改」，畫面上的 displayName / photoURL 不會自動更新。
+// triggerRef 強制通知所有讀取 currentUser 的畫面重新算一次，藉此拿到最新值。
+const onProfileSaved = () => triggerRef(currentUser);
 
 const showOnboarding = ref(false);
 try { showOnboarding.value = localStorage.getItem('yabuy_onboarded') !== '1'; } catch (e) { showOnboarding.value = true; }
