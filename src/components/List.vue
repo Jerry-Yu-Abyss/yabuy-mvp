@@ -68,6 +68,16 @@
           </div>
         </section>
 
+        <section class="field-group">
+          <label class="field-label" for="profile-college-input">學院</label>
+          <div class="field-box">
+            <select id="profile-college-input" v-model="collegeInput" class="field-select">
+              <option value="">尚未選擇</option>
+              <option v-for="c in colleges" :key="c" :value="c">{{ c }}</option>
+            </select>
+          </div>
+        </section>
+
         <button class="save-btn" type="button" :disabled="!canSave || saving" @click="handleSave">
           {{ saving ? '儲存中…' : '儲存變更' }}
         </button>
@@ -80,13 +90,20 @@
 import { ref, computed } from 'vue';
 import { auth, db, storage } from '@/firebase';
 import { updateProfile } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { toast } from './toast.js';
+import { subjectData } from './Subject.js';
 
 const emit = defineEmits(['close', 'saved']);
 
 const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23d1d9c6'/%3E%3Ccircle cx='50' cy='40' r='17' fill='%23ffffff'/%3E%3Cpath d='M22 84c0-16 12-27 28-27s28 11 28 27z' fill='%23ffffff'/%3E%3C/svg%3E";
+
+// 學院清單固定為這 5 個真實學院——沿用 Subject.js（教科書分類共用的同一份資料），
+// 排除「校定必修_...」那兩筆通識課程用的偽學院項目，不重複維護第二份清單。
+const colleges = subjectData
+  .map((c) => c.college)
+  .filter((name) => !name.startsWith('校定必修'));
 
 // ready: false 的項目僅先佔位，點擊不動作（避免給出假的可用功能）
 const menuGroups = [
@@ -101,13 +118,14 @@ const menuGroups = [
 const view = ref('menu');   // 'menu' | 'profile'
 
 const nameInput = ref('');
+const collegeInput = ref('');
 const fileInput = ref(null);
 const avatarPreview = ref(DEFAULT_AVATAR);
 const compressedBlob = ref(null);
 const fileError = ref('');
 const saving = ref(false);
 
-const onItemClick = (key) => {
+const onItemClick = async (key) => {
   if (key !== 'profile') return;
   const fbUser = auth.currentUser;
   if (!fbUser) {
@@ -118,7 +136,17 @@ const onItemClick = (key) => {
   avatarPreview.value = fbUser.photoURL || DEFAULT_AVATAR;
   compressedBlob.value = null;
   fileError.value = '';
-  view.value = 'profile';
+  view.value = 'profile';   // 先開表單，學院是 Firestore 才有的欄位，讀取期間不擋畫面
+
+  // 學院不在 Firebase Auth profile 裡（updateProfile 只認 displayName/photoURL），
+  // 唯一來源是 Firestore users 文件，開表單時額外讀一次帶出目前值。
+  collegeInput.value = '';
+  try {
+    const snap = await getDoc(doc(db, 'users', fbUser.uid));
+    if (snap.exists()) collegeInput.value = snap.data().college || '';
+  } catch (e) {
+    console.error('[List] 讀取學院資料失敗:', e);
+  }
 };
 
 const canSave = computed(() => nameInput.value.trim().length > 0);
@@ -175,10 +203,15 @@ const handleSave = async () => {
     }
     const displayName = nameInput.value.trim();
 
-    // 兩邊都要寫：Auth profile 是即時 UI 顯示的來源（User.vue 讀 props.user），
-    // Firestore users 文件是其他頁面（如賣家名稱、評價）查詢時的紀錄來源。
+    // displayName/photoURL 兩邊都要寫：Auth profile 是即時 UI 顯示的來源
+    // （User.vue 讀 props.user），Firestore users 文件是其他頁面（如賣家名稱、
+    // 評價）查詢時的紀錄來源。學院不是 Auth profile 支援的欄位，只寫 Firestore。
     await updateProfile(fbUser, { displayName, photoURL });
-    await updateDoc(doc(db, 'users', fbUser.uid), { displayName, photoURL });
+    await updateDoc(doc(db, 'users', fbUser.uid), {
+      displayName,
+      photoURL,
+      college: collegeInput.value
+    });
 
     toast('✅ 個人資料已更新');
     emit('saved');
@@ -423,7 +456,8 @@ const handleSave = async () => {
   padding: 4px 16px;
   box-shadow: 0 2px 10px rgba(47, 74, 58, 0.06);
 }
-.field-box input {
+.field-box input,
+.field-box select {
   width: 100%;
   height: 48px;
   border: none;
@@ -433,6 +467,16 @@ const handleSave = async () => {
   font-weight: 600;
   color: #2f4a3a;
   box-sizing: border-box;
+}
+
+.field-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232f4a3a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+  background-size: 18px;
+  padding-right: 24px;
 }
 
 .save-btn {
