@@ -14,7 +14,7 @@
               "type": "markdown",
               "state": {
                 "file": "wiki/Home.md",
-                "mode": "source",
+                "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
@@ -41,7 +41,9 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
               },
               "icon": "lucide-folder-closed",
               "title": "檔案瀏覽器"
@@ -185,7 +187,15 @@
   },
   "active": "e14a29c898c449cd",
   "lastOpenFiles": [
+    "wiki/導覽架構.md",
     "wiki/資料模型.md",
+    "wiki/部署與環境.md",
+    "wiki/系統功能.md",
+    "wiki/元件目錄.md",
+    "wiki/已知問題.md",
+    "wiki/交易生命週期.md",
+    "wiki/Home.md",
+    "wiki/專案結構.md",
     "wiki/驗證與權限.md"
   ]
 }
