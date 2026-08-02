@@ -5,13 +5,13 @@
 
     <header class="panel-head">
       <button
-        v-if="view === 'profile'"
+        v-if="view !== 'menu'"
         class="back-btn"
         type="button"
         aria-label="返回選單"
         @click="view = 'menu'"
       >‹</button>
-      <h2 class="panel-title">{{ view === 'profile' ? '更改個人資料' : '功能選單' }}</h2>
+      <h2 class="panel-title">{{ viewTitle }}</h2>
       <button class="close-btn" type="button" aria-label="關閉" @click="$emit('close')">✕</button>
     </header>
 
@@ -82,6 +82,9 @@
           {{ saving ? '儲存中…' : '儲存變更' }}
         </button>
       </template>
+
+      <!-- ── 排行榜 ── -->
+      <Ranking v-else-if="view === 'ranking'" />
     </div>
   </aside>
 </template>
@@ -94,6 +97,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { toast } from './toast.js';
 import { subjectData } from './Subject.js';
+import Ranking from './Ranking.vue';
 
 const emit = defineEmits(['close', 'saved']);
 
@@ -110,12 +114,21 @@ const menuGroups = [
   {
     title: '帳號',
     items: [
-      { key: 'profile', icon: '👤', label: '更改個人資料', desc: '名字、頭像', ready: true }
+      { key: 'profile', icon: '👤', label: '更改個人資料', desc: '名字、頭像、學院', ready: true }
+    ]
+  },
+  {
+    title: '校園動態',
+    items: [
+      { key: 'ranking', icon: '🏆', label: '排行榜', desc: '院所交易、交易王、循環累計', ready: true }
     ]
   }
 ];
 
-const view = ref('menu');   // 'menu' | 'profile'
+const view = ref('menu');   // 'menu' | 'profile' | 'ranking'
+
+const VIEW_TITLES = { profile: '更改個人資料', ranking: '排行榜' };
+const viewTitle = computed(() => VIEW_TITLES[view.value] || '功能選單');
 
 const nameInput = ref('');
 const collegeInput = ref('');
@@ -126,8 +139,19 @@ const fileError = ref('');
 const saving = ref(false);
 
 const onItemClick = async (key) => {
-  if (key !== 'profile') return;
   const fbUser = auth.currentUser;
+
+  if (key === 'ranking') {
+    // 排行榜要讀全站 orders / users，Firestore 規則要求已登入
+    if (!fbUser) {
+      toast('🔒 請先登入才能查看排行榜。');
+      return;
+    }
+    view.value = 'ranking';
+    return;
+  }
+
+  if (key !== 'profile') return;
   if (!fbUser) {
     toast('🔒 請先登入才能更改個人資料。');
     return;
