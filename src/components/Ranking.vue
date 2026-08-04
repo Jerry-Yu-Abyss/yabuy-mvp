@@ -34,7 +34,7 @@
               <div
                 class="hist-bar"
                 :class="{ top: c.count > 0 && c.count === maxCollegeUserCount }"
-                :style="{ height: barHeight(c.count, maxCollegeUserCount) }"
+                :style="{ height: regBarHeight(c.count) }"
               ></div>
             </div>
             <span class="hist-label" :title="c.college">{{ c.short }}</span>
@@ -175,6 +175,12 @@ const maxUserTotal = computed(() =>
 // 高度/寬度都保留最小可見值，讓「有資料但數量很少」不會看起來像沒有資料
 const barHeight = (v, max) => (!max || !v ? '2px' : `${Math.max(4, (v / max) * 100)}%`);
 const barWidth = (v, max) => (!max || !v ? '2px' : `${Math.max(4, (v / max) * 100)}%`);
+
+// 各學院註冊人數改用固定比例尺，不是跟同儕比的相對高度：
+// 50 人 = 10% 高度 → 滿版（100%）代表 500 人。學院之間人數差距通常不大，
+// 相對高度會讓小差距被誇大成「爆滿 vs 全空」；固定比例尺才看得出真實規模。
+const REG_SCALE_MAX = 500;
+const regBarHeight = (v) => (!v ? '2px' : `${Math.min(100, Math.max(4, (v / REG_SCALE_MAX) * 100))}%`);
 const rankClass = (i) => (i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '');
 
 const toMillis = (ts) => {
