@@ -191,9 +191,23 @@
                 </div>
               </Transition>
 
-              <div v-if="order.status === 'accepted'" class="accepted-success-row">
-                <div class="success-text">🎉 預約成功！</div>
-                <button class="btn-deal-trigger" @click="goToDeal(order)">🚶 我抵達了</button>
+              <div v-if="order.status === 'accepted'" class="accepted-success-col">
+                <div class="accepted-success-row">
+                  <div class="success-text">🎉 預約成功！</div>
+                  <button class="chat-trigger-btn" type="button" @click.stop="chatOrder = order">💬 傳訊息</button>
+                </div>
+
+                <button
+                  class="btn-deal-trigger"
+                  :class="{ locked: !canStartSafeTrade(order) }"
+                  :disabled="!canStartSafeTrade(order)"
+                  @click="goToSafeTrade(order)"
+                >
+                  {{ safeTradeBtnLabel(order) }}
+                </button>
+                <p v-if="!canStartSafeTrade(order)" class="safe-trade-hint">
+                  🔒 約定時間前 10 分鐘（{{ safeTradeOpenText(order) }}）才會開放
+                </p>
               </div>
 
               <div v-if="order.status === 'completed'" class="price-summary">
@@ -213,15 +227,17 @@
 
   <Teleport to="body">
     <DealPage v-if="selectedDeal" :order="selectedDeal" :role="activeTab" @close="selectedDeal = null" />
+    <CannedChat v-if="chatOrder" :order="chatOrder" :role="activeTab" @close="chatOrder = null" />
   </Teleport>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import DealPage from './Deal.vue';
-import { auth, db } from '@/firebase'; 
-import { collection, query, where, onSnapshot, orderBy, updateDoc, doc, serverTimestamp } from 'firebase/firestore'; 
-import { onAuthStateChanged } from 'firebase/auth'; 
+import CannedChat from './CannedChat.vue';
+import { auth, db } from '@/firebase';
+import { collection, query, where, onSnapshot, orderBy, updateDoc, getDoc, doc, serverTimestamp, increment } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const emit = defineEmits(['back-home']);
 const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院', '鳥籠', '感恩學院宿舍']; 
@@ -354,15 +370,51 @@ const rejectOrder = async (order) => {
 const canCancel = (order) =>
   activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
 
+// 取消次數限制：一個月最多 3 次，記在 users/{uid}.cancelCount，
+// 跨期（30 天）自動歸零。這裡只做前端判斷與寫入，沒有安全規則強制，
+// 使用者理論上能繞過（見 docs/wiki/新交易流程規格.md 的風險 1）。
+const CANCEL_LIMIT = 3;
+const CANCEL_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
 const cancelOrder = async (order) => {
-  // 說明清楚取消後還能再發起，減少使用者第一次按 ✕ 時的猶豫
-  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？\n\n取消後這筆請求會關閉，但您隨時可以回到商品頁重新發起交易。`)) return;
+  const user = auth.currentUser;
+  if (!user) return;
+
+  let remaining = CANCEL_LIMIT;
+  let periodExpired = true;
+  try {
+    const userSnap = await getDoc(doc(db, 'users', user.uid));
+    const data = userSnap.exists() ? userSnap.data() : {};
+    const periodStartMs = data.cancelPeriodStart?.toMillis?.() ?? null;
+    periodExpired = !periodStartMs || (Date.now() - periodStartMs) > CANCEL_PERIOD_MS;
+    remaining = CANCEL_LIMIT - (periodExpired ? 0 : (data.cancelCount || 0));
+  } catch (e) {
+    console.error('[Mailbox] 讀取取消額度失敗，暫以尚有額度處理：', e.code, e.message);
+  }
+
+  if (remaining <= 0) {
+    alert(`本月取消次數已達上限（${CANCEL_LIMIT} 次／30 天），暫時無法取消，請直接與對方協調或聯繫平台管理員。`);
+    return;
+  }
+
+  // 說明清楚取消後還能再發起、以及這次取消會扣掉的額度，減少猶豫也讓限制有感
+  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？\n\n取消後這筆請求會關閉，但您隨時可以回到商品頁重新發起交易。\n\n取消後本月剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次。`)) return;
+
   try {
     await updateDoc(doc(db, "orders", order.id), {
       status: 'rejected',
       lastActionBy: 'buyer',
       updatedAt: serverTimestamp()
     });
+    // 跨期要歸零重算，不能用 increment（沒有基準值可加）；未跨期才用原子遞增
+    if (periodExpired) {
+      await updateDoc(doc(db, 'users', user.uid), {
+        cancelCount: 1,
+        cancelPeriodStart: serverTimestamp()
+      });
+    } else {
+      await updateDoc(doc(db, 'users', user.uid), { cancelCount: increment(1) });
+    }
   } catch (e) {
     console.error('[Mailbox] 取消請求失敗：', e.code, e.message);
     alert("取消失敗，請重試。");
@@ -372,23 +424,68 @@ const cancelOrder = async (order) => {
 const statusText = (s) => ({ pending: '等待中', negotiating: '協商中', accepted: '預約成立', rejected: '已取消', failed: '交易失敗', completed: '✅ 已完成' }[s] || s);
 const formatTime = (ts) => { if (!ts) return ''; const d = ts.toDate(); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`; };
 const selectedDeal = ref(null);
-const goToDeal = (order) => {
-  console.log('%c[Mailbox]', 'color:#1976d2;font-weight:bold;', '🚶 點擊「我抵達了」→ 開啟 Deal', {
-    orderId: order.id,
-    role: activeTab.value,
-    status: order.status,
-    productId: order.productId,
-    buyerReady: order.buyerReady,
-    sellerReady: order.sellerReady
-  });
+const chatOrder = ref(null);
+
+// ── 安全交易時間閘門：約定時間前 10 分鐘才開放 ──
+// order.time 是不含時區的 "YYYY-MM-DD HH:mm" 字串，用裝置本地時區解析（沿用
+// startNegotiate 既有的 replace(' ','T') 慣例，跟這支檔案其他地方一致）。
+const SAFE_TRADE_WINDOW_MS = 10 * 60 * 1000;
+
+// 用 ref + 計時器讓「還剩幾分鐘開放」是響應式的，不會像純 Date.now() 的
+// computed 那樣時間到了畫面也不會自己更新（同一類 bug 本次已在 Deal.vue 修過三次）。
+const nowTick = ref(Date.now());
+let nowTimer = null;
+
+const appointmentMillis = (order) => {
+  if (!order.time) return null;
+  const d = new Date(order.time.replace(' ', 'T'));
+  return isNaN(d.getTime()) ? null : d.getTime();
+};
+
+const canStartSafeTrade = (order) => {
+  const t = appointmentMillis(order);
+  if (t == null) return false;
+  return nowTick.value >= t - SAFE_TRADE_WINDOW_MS;
+};
+
+const safeTradeOpenText = (order) => {
+  const t = appointmentMillis(order);
+  if (t == null) return '';
+  const open = new Date(t - SAFE_TRADE_WINDOW_MS);
+  return `${open.getMonth() + 1}/${open.getDate()} ${open.getHours().toString().padStart(2, '0')}:${open.getMinutes().toString().padStart(2, '0')}`;
+};
+
+const myReadyField = () => (activeTab.value === 'buy' ? 'buyerReady' : 'sellerReady');
+const iAmSafeReady = (order) => !!order[myReadyField()];
+const safeTradeBtnLabel = (order) => {
+  if (iAmSafeReady(order)) return '🔒 查看安全交易進度';
+  if (canStartSafeTrade(order)) return '🔒 安全交易';
+  return '⏳ 尚未到開放時間';
+};
+
+const goToSafeTrade = async (order) => {
+  if (!canStartSafeTrade(order)) return;
+  if (!iAmSafeReady(order)) {
+    try {
+      await updateDoc(doc(db, 'orders', order.id), { [myReadyField()]: true, updatedAt: serverTimestamp() });
+    } catch (e) {
+      console.error('[Mailbox] 按下安全交易失敗：', e.code, e.message);
+      alert('操作失敗，請重試。');
+      return;
+    }
+  }
   selectedDeal.value = order;
 };
 
-onMounted(() => { onAuthStateChanged(auth, (user) => { if (user) initMailboxSync(); }); });
-onUnmounted(() => { 
-  unsubscribeBuy?.(); 
-  unsubscribeSell?.(); 
+onMounted(() => {
+  onAuthStateChanged(auth, (user) => { if (user) initMailboxSync(); });
+  nowTimer = setInterval(() => { nowTick.value = Date.now(); }, 15000);
+});
+onUnmounted(() => {
+  unsubscribeBuy?.();
+  unsubscribeSell?.();
   unsubscribeSystem?.(); // 清除廣播監聽
+  clearInterval(nowTimer);
 });
 </script>
 
@@ -517,9 +614,14 @@ onUnmounted(() => {
 .btn-text { background: none; border: none; color: #999; font-weight: 700; cursor: pointer; }
 .btn-confirm { background: #1976d2; color: #fff; border: none; padding: 10px 20px; border-radius: 12px; font-weight: 800; cursor: pointer; }
 
+.accepted-success-col { display: flex; flex-direction: column; gap: 10px; }
 .accepted-success-row { display: flex; justify-content: space-between; align-items: center; background: #e8f5e9; padding: 12px 16px; border-radius: 18px; }
 .success-text { color: #2e7d32; font-weight: 850; font-size: 14px; }
-.btn-deal-trigger { background: #2e7d32; color: #fff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 800; font-size: 12px; cursor: pointer; }
+.chat-trigger-btn { background: #fff; color: #2e7d32; border: 1.5px solid #a5d6a7; padding: 7px 12px; border-radius: 10px; font-weight: 800; font-size: 12px; cursor: pointer; }
+
+.btn-deal-trigger { width: 100%; height: 46px; background: #2e7d32; color: #fff; border: none; border-radius: 14px; font-weight: 850; font-size: 14px; cursor: pointer; }
+.btn-deal-trigger.locked { background: #e0e0e0; color: #999; cursor: not-allowed; }
+.safe-trade-hint { margin: -4px 0 0; font-size: 11px; color: #999; font-weight: 700; text-align: center; }
 
 .price-summary { margin-top: 10px; font-size: 13px; font-weight: 800; color: #666; text-align: right; }
 .price-val { font-size: 18px; color: #2e7d32; margin-left: 6px; }

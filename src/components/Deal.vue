@@ -1,79 +1,12 @@
 <template>
   <div class="deal-overlay" @touchmove.stop>
 
-    <div v-if="step === 'verify'" class="deal-screen verify-screen">
-      <div class="screen-header">
+    <DealTimeline v-if="step !== 'done'" :step="step" />
+
+    <div v-if="step === 'safe-wait'" class="deal-screen safe-wait-screen">
+      <div class="screen-header" :class="{ 'no-timeline': false }">
         <button class="back-pill" @click="$emit('close')">← 返回</button>
-        <h2 class="screen-title">確認見面</h2>
-        <div></div>
-      </div>
-
-      <template v-if="role === 'sell'">
-        <div class="qr-hero">
-          <p class="qr-label">請讓買家掃描此 QR</p>
-          <div class="qr-wrapper">
-            <canvas ref="qrCanvas" class="qr-canvas"></canvas>
-          </div>
-          <p class="qr-sub">識別碼：{{ liveOrder.id.slice(0, 8).toUpperCase() }}</p>
-        </div>
-        <div class="waiting-badge" v-if="!sellerReady">
-          <span class="dot-pulse"></span> 等待買家掃描...
-        </div>
-        <div class="ready-badge" v-else>✅ 身份已確認，等待買家確認就緒</div>
-      </template>
-
-      <template v-if="role === 'buy'">
-        <div class="scan-hero">
-          <p class="scan-label">請掃描賣家的 QR Code</p>
-          <div class="scan-box" :class="{ scanning: isScanning, success: scanSuccess }">
-            <video ref="scanVideo" class="scan-video" playsinline></video>
-            <div class="scan-frame">
-              <div class="corner tl"></div><div class="corner tr"></div>
-              <div class="corner bl"></div><div class="corner br"></div>
-              <div class="scan-line" v-if="isScanning && !scanSuccess"></div>
-            </div>
-            <div class="scan-success-overlay" v-if="scanSuccess">
-              <span class="check-big">✓</span>
-            </div>
-          </div>
-
-          <div v-if="!isScanning && !scanSuccess" class="scan-actions">
-            <button class="btn-scan" @click="startScan">開啟相機掃描</button>
-            <p class="manual-hint">或手動輸入識別碼</p>
-            <div class="manual-row">
-              <input v-model="manualCode" class="manual-input" placeholder="輸入 8 碼識別碼" maxlength="8" />
-              <button class="btn-manual-confirm" @click="confirmManual">確認</button>
-            </div>
-          </div>
-          <div v-if="scanSuccess" class="ready-badge buyer-ready">✅ 賣家身份確認，按下就緒</div>
-        </div>
-      </template>
-
-      <div class="arrive-action" v-if="role === 'buy'">
-        <button 
-          class="btn-ready"
-          :class="{ active: scanSuccess }"
-          :disabled="!scanSuccess || buyerReady"
-          @click="setReady"
-        >
-          {{ buyerReady ? '✅ 已就緒' : '確認就緒' }}
-        </button>
-      </div>
-      <div class="arrive-action" v-if="role === 'sell'">
-        <button
-          class="btn-ready seller"
-          :disabled="sellerReady"
-          @click="setReady"
-        >
-          {{ sellerReady ? '✅ 已就緒' : '我已就位' }}
-        </button>
-      </div>
-    </div>
-
-    <div v-if="step === 'confirm'" class="deal-screen confirm-screen">
-      <div class="screen-header">
-        <div></div>
-        <h2 class="screen-title">確認成交？</h2>
+        <h2 class="screen-title">安全交易確認</h2>
         <div></div>
       </div>
 
@@ -90,15 +23,57 @@
         </div>
       </div>
 
-      <div class="waiting-other" v-if="waitingForOther">
+      <div class="waiting-other" v-if="myReady && !otherReady">
         <span class="dot-pulse"></span>
-        {{ waitingText }}
+        等待對方按下安全交易...
       </div>
 
-      <div class="confirm-actions" v-else>
-        <button class="btn-deal reject" @click="handleDeal(false)">❌ 不成交</button>
-        <button class="btn-deal accept" @click="handleDeal(true)">🤝 願意成交</button>
+      <div class="arrive-action" v-if="!myReady">
+        <button class="btn-ready active" @click="setReady">🔒 按下安全交易</button>
       </div>
+    </div>
+
+    <div v-if="step === 'scan'" class="deal-screen scan-screen">
+      <div class="screen-header">
+        <div></div>
+        <h2 class="screen-title">掃描交易點 QR</h2>
+        <div></div>
+      </div>
+
+      <template v-if="!myScanned">
+        <div class="scan-hero">
+          <p class="scan-label">請掃描「{{ liveOrder.location }}」現場張貼的交易點 QR</p>
+          <div class="scan-box" :class="{ scanning: isScanning }">
+            <video ref="scanVideo" class="scan-video" playsinline></video>
+            <div class="scan-frame">
+              <div class="corner tl"></div><div class="corner tr"></div>
+              <div class="corner bl"></div><div class="corner br"></div>
+              <div class="scan-line" v-if="isScanning"></div>
+            </div>
+          </div>
+
+          <div v-if="!isScanning" class="scan-actions">
+            <button class="btn-scan" @click="startScan">開啟相機掃描</button>
+            <p class="manual-hint">或手動輸入交易點代碼</p>
+            <div class="manual-row">
+              <input v-model="manualCode" class="manual-input" placeholder="輸入交易點代碼" />
+              <button class="btn-manual-confirm" @click="confirmManual">確認</button>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="scan-done-badge">
+          ✅ 已確認位於「{{ nameForLocationCode(liveOrder.actualLocationCode) }}」
+        </div>
+        <div class="waiting-other">
+          <span class="dot-pulse"></span>
+          等待對方掃描...
+        </div>
+      </template>
+
+      <p class="safety-note">📷 系統將記錄實際交易時間與地點，若後續有糾紛將以該地點監視器錄影保障同學安全。</p>
     </div>
 
     <div v-if="step === 'price'" class="deal-screen price-screen">
@@ -108,8 +83,16 @@
         <div></div>
       </div>
 
-      <!-- 已送出：金額寫入後 step 仍停在 'price'，改顯示等待狀態而非可再送出的表單 -->
-      <template v-if="priceSubmitted">
+      <template v-if="role === 'sell'">
+        <!-- 賣家在買家送出金額前，只需等待 -->
+        <div class="waiting-other price-wait">
+          <span class="dot-pulse"></span>
+          等待買家輸入成交金額...
+        </div>
+      </template>
+
+      <template v-else-if="priceSubmitted">
+        <!-- 已送出：金額寫入後 step 仍停在 'price'，改顯示等待狀態而非可再送出的表單 -->
         <div class="price-hero">
           <div class="price-context">
             <span class="price-context-label">已送出金額</span>
@@ -180,7 +163,12 @@
           <span class="done-check">✓</span>
         </div>
         <h2 class="done-title">交易完成！</h2>
-        <p class="done-price">成交金額 ${{ liveOrder.finalPrice }}</p>
+      </div>
+
+      <div class="done-actual-box">
+        <div class="done-actual-row"><span>📍 實際地點</span><span>{{ actualLocationName }}</span></div>
+        <div class="done-actual-row"><span>⏰ 實際時間</span><span>{{ actualTimeText }}</span></div>
+        <div class="done-actual-row price"><span>💰 實際金額</span><span>${{ liveOrder.finalPrice }}</span></div>
       </div>
 
       <!-- 交易評價 -->
@@ -216,23 +204,23 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
-import QRCode from 'qrcode';   // 產生 QR：npm install qrcode
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import jsQR from 'jsqr';       // 掃描 QR（純 JS，iOS 也支援）：npm install jsqr
-import { db, auth } from '@/firebase'; //
-import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection, getDocs, query, where, increment } from 'firebase/firestore'; //
+import { db, auth } from '@/firebase';
+import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection, increment } from 'firebase/firestore';
+import { codeForLocationName, nameForLocationCode } from './TradePoints.js';
+import DealTimeline from './DealTimeline.vue';
 
 const props = defineProps({
   order: { type: Object, required: true },
-  role:  { type: String, required: true } 
+  role:  { type: String, required: true }
 });
 const emit = defineEmits(['close']);
 
-const step           = ref('verify');
-const isScanning     = ref(false);
-const scanSuccess    = ref(false);
-const manualCode     = ref('');
-const finalPrice     = ref(null);
+const step            = ref('safe-wait');
+const isScanning      = ref(false);
+const manualCode      = ref('');
+const finalPrice      = ref(null);
 const submittingPrice = ref(false);
 
 // 交易評價
@@ -273,54 +261,48 @@ const submitRating = async () => {
     ratingSubmitting.value = false;
   }
 };
-const qrCanvas       = ref(null);
+
 const scanVideo      = ref(null);
 let   scanStream     = null;
 let   unsubOrder     = null;
 
 // 🔍 [偵錯] 統一 log 工具：買賣雙方各自的裝置會標示自己的角色，方便在 DevTools 比對。
-//    要關閉偵錯時，把下面 enabled 改成 false 即可。
 const DEBUG = { enabled: true };
 const ROLE_LABEL = props.role === 'buy' ? '買家' : props.role === 'sell' ? '賣家' : `未知(${props.role})`;
 const log = (...args) => { if (DEBUG.enabled) console.log(`%c[Deal:${ROLE_LABEL}]`, 'color:#2e7d32;font-weight:bold;', ...args); };
 const warn = (...args) => { if (DEBUG.enabled) console.warn(`[Deal:${ROLE_LABEL}]`, ...args); };
-// 把訂單關鍵欄位濃縮成一行，方便觀察每次快照的變化
 const peek = (o) => ({
   status: o.status, finalPrice: o.finalPrice,
   buyerReady: o.buyerReady, sellerReady: o.sellerReady,
-  buyerDeal: o.buyerDeal, sellerDeal: o.sellerDeal,
+  buyerScannedAt: !!o.buyerScannedAt, sellerScannedAt: !!o.sellerScannedAt,
   step: step.value
 });
 
 // ✅ 響應式狀態：用於即時同步 Firestore 資料
 const liveOrder = ref({ ...props.order });
 
-const buyerReady  = computed(() => liveOrder.value.buyerReady  === true);
-const sellerReady = computed(() => liveOrder.value.sellerReady === true);
-const buyerDeal   = computed(() => liveOrder.value.buyerDeal);
-const sellerDeal  = computed(() => liveOrder.value.sellerDeal);
-// 「我方已表態，但流程還不能往下走」→ 顯示等待中。
-// ⚠️ 不可用「對方 === undefined」判斷：對方若先表態，其值已是 true 而非 undefined，
-//    會導致本方表態後等待提示不顯示、按鈕又跑回來，看起來像按了沒反應。
-const waitingForOther = computed(() => {
-  const o = liveOrder.value;
-  if (props.role === 'buy')  return o.buyerDeal === true && o.sellerDeal !== true;
-  // 賣家：對方尚未同意，或雙方都同意但買家還沒送出金額，都算等待中
-  if (props.role === 'sell') return o.sellerDeal === true && (o.buyerDeal !== true || !o.finalPrice);
-  return false;
-});
+const myReady    = computed(() => (props.role === 'buy' ? !!liveOrder.value.buyerReady : !!liveOrder.value.sellerReady));
+const otherReady = computed(() => (props.role === 'buy' ? !!liveOrder.value.sellerReady : !!liveOrder.value.buyerReady));
 
-// 等待的原因不同，文案也不同，讓使用者知道現在在等什麼
-const waitingText = computed(() => {
-  const o = liveOrder.value;
-  if (props.role === 'sell' && o.sellerDeal === true && o.buyerDeal === true && !o.finalPrice) {
-    return '等待買家輸入成交金額...';
-  }
-  return '等待對方確認中...';
-});
+const myScanned    = computed(() => (props.role === 'buy' ? !!liveOrder.value.buyerScannedAt : !!liveOrder.value.sellerScannedAt));
+const otherScanned = computed(() => (props.role === 'buy' ? !!liveOrder.value.sellerScannedAt : !!liveOrder.value.buyerScannedAt));
 
 // 買家已送出金額、等待賣家確認（以 Firestore 快照為準，不看本地送出狀態）
 const priceSubmitted = computed(() => Number(liveOrder.value.finalPrice) > 0);
+
+// 交易點掃描應比對的代碼：由訂單的 location 名稱查表得出
+const expectedCode = computed(() => codeForLocationName(liveOrder.value.location));
+
+const actualLocationName = computed(() =>
+  nameForLocationCode(liveOrder.value.actualLocationCode) || liveOrder.value.location
+);
+const actualTimeText = computed(() => {
+  const b = liveOrder.value.buyerScannedAt?.toDate?.();
+  const s = liveOrder.value.sellerScannedAt?.toDate?.();
+  const latest = [b, s].filter(Boolean).sort((a, c) => c - a)[0];
+  if (!latest) return '—';
+  return `${latest.getMonth() + 1}/${latest.getDate()} ${latest.getHours().toString().padStart(2, '0')}:${latest.getMinutes().toString().padStart(2, '0')}`;
+});
 
 // ✅ 核心同步邏輯
 onMounted(() => {
@@ -336,7 +318,6 @@ onMounted(() => {
       warn('⚠️ 快照回傳：訂單文件不存在（可能已被刪除）。docId =', props.order.id);
       return;
     }
-    // 將最新快照更新到響應式變數中
     liveOrder.value = { id: snap.id, ...snap.data() };
     log('📡 收到最新快照 →', peek(liveOrder.value));
     syncStep();
@@ -344,10 +325,6 @@ onMounted(() => {
     // ⚠️ onSnapshot 的「錯誤」回呼：權限不足、規則擋住時會走這裡（很常見的卡關原因！）
     warn('🔥 onSnapshot 監聽失敗（請檢查 Firestore 規則 / 網路）：', err.code, err.message);
   });
-
-  if (props.role === 'sell') {
-    nextTick(() => drawQR());
-  }
 });
 
 onUnmounted(() => {
@@ -356,67 +333,78 @@ onUnmounted(() => {
   stopScan();
 });
 
+// 分支順序＝流程由後往前，且只依 Firestore 狀態推導，不依賴目前的 step，
+// 這樣關掉 Deal 再重開時一定會回到正確的當前步驟，不會退回已完成的步驟。
 const syncStep = () => {
   const o = liveOrder.value;
-  log('🔄 syncStep 判斷中 →', peek(o));
 
   if (o.status === 'completed') { log('  ✅ 分支[completed] → step=done'); step.value = 'done'; return; }
-  if (o.buyerDeal === false || o.sellerDeal === false) {
-    log('  ❌ 分支[有人不成交] → 設為 failed 並關閉', { buyerDeal: o.buyerDeal, sellerDeal: o.sellerDeal });
-    updateDoc(doc(db, "orders", props.order.id), { status: 'failed', updatedAt: serverTimestamp() });
-    emit('close');
-    return;
-  }
-  // ⚠️ 分支順序＝流程由後往前，且只依 Firestore 狀態推導，不依賴目前的 step。
-  //    早期版本把「雙方就緒」放在最前面且限定 step==='verify'，導致關掉 Deal 再重開時，
-  //    即使雙方早已同意成交，也會退回「確認成交？」畫面並重新顯示按鈕。
-  if (o.buyerDeal === true && o.sellerDeal === true) {
-    if (props.role === 'buy') {
-      // 金額未送出 → 出價表單；已送出 → 同一畫面顯示「等待賣家確認」（見 priceSubmitted）
-      log('  💰 分支[雙方同意, 買家] → step=price');
+
+  const bothScanned = !!o.buyerScannedAt && !!o.sellerScannedAt;
+  if (bothScanned) {
+    if (props.role === 'sell' && o.finalPrice) {
+      log('  💰 分支[已掃碼, 金額已送出] → step=seller-confirm-price');
+      step.value = 'seller-confirm-price';
+    } else {
+      log('  💰 分支[已掃碼] → step=price');
       step.value = 'price';
-      return;
     }
-    if (props.role === 'sell') {
-      // 買家還沒送金額時停在 confirm，由 waitingForOther 顯示「等待買家輸入成交金額」
-      const next = o.finalPrice ? 'seller-confirm-price' : 'confirm';
-      log(`  💰 分支[雙方同意, 賣家] → step=${next}`);
-      step.value = next;
-      return;
-    }
-  }
-  if (o.buyerReady && o.sellerReady) {
-    log('  🤝 分支[雙方就緒] → step=confirm（開始交易）');
-    step.value = 'confirm';
     return;
   }
 
-  // 沒有命中：代表還在等對方按「就緒」，畫面維持 verify 是正確的
-  log('🟡 尚未達成下一階段條件 → 維持 step =', step.value, '｜目前狀態：', peek(o));
+  if (o.buyerReady && o.sellerReady) {
+    log('  📷 分支[雙方已按安全交易] → step=scan');
+    step.value = 'scan';
+    return;
+  }
+
+  log('  🔒 分支[等待安全交易] → step=safe-wait');
+  step.value = 'safe-wait';
 };
 
-const drawQR = async () => {
-  await nextTick();
-  if (!qrCanvas.value) { warn('⚠️ qrCanvas 尚未渲染'); return; }
-  if (!props.order?.id) { warn('⚠️ 沒有 order.id，無法產生 QR'); return; }
-  log('🖼️ 產生 QR，內容（=訂單ID）：', props.order.id);
+const setReady = async () => {
+  const field = props.role === 'buy' ? 'buyerReady' : 'sellerReady';
+  log(`👉 點擊「按下安全交易」→ 準備寫入 ${field}=true`);
   try {
-    await QRCode.toCanvas(qrCanvas.value, props.order.id, {
-      width: 200, margin: 1, errorCorrectionLevel: 'H',
-      color: { dark: '#1a1a1a', light: '#ffffff' }
-    });
-    log('✅ QR 產生成功');
+    await updateDoc(doc(db, "orders", props.order.id), { [field]: true, updatedAt: serverTimestamp() });
+    log(`✅ ${field}=true 已成功寫入 Firestore`);
   } catch (e) {
-    warn('🔥 QR 產生失敗：', e.message);
+    warn(`🔥 寫入 ${field} 失敗（多半是 Firestore 規則或網路）：`, e.code, e.message);
+    alert('安全交易確認送出失敗，請檢查網路後重試。');
+  }
+};
+
+const recordScan = async () => {
+  const field = props.role === 'buy' ? 'buyerScannedAt' : 'sellerScannedAt';
+  log(`👉 掃描成功 → 準備寫入 ${field}=serverTimestamp()，地點代碼=${expectedCode.value}`);
+  try {
+    await updateDoc(doc(db, "orders", props.order.id), {
+      [field]: serverTimestamp(),
+      actualLocationCode: expectedCode.value,
+      updatedAt: serverTimestamp()
+    });
+    log(`✅ ${field} 已成功寫入 Firestore`);
+  } catch (e) {
+    warn(`🔥 寫入 ${field} 失敗：`, e.code, e.message);
+    alert('掃描確認送出失敗，請重試。');
   }
 };
 
 const confirmManual = () => {
   const code = manualCode.value.trim().toUpperCase();
-  const expected = props.order.id.slice(0, 8).toUpperCase();
-  log('🔑 手動輸入識別碼比對：', { 輸入: code, 應為: expected });
-  if (code === expected) { log('  ✅ 識別碼正確，scanSuccess=true'); scanSuccess.value = true; }
-  else { warn('  ❌ 識別碼不符'); alert('識別碼不符！'); }
+  log('🔑 手動輸入交易點代碼比對：', { 輸入: code, 應為: expectedCode.value });
+  if (!expectedCode.value) {
+    warn('  ⚠️ 此訂單的地點不在交易點清單內：', liveOrder.value.location);
+    alert('此訂單的地點不在交易點清單內，請聯繫平台管理員。');
+    return;
+  }
+  if (code === expectedCode.value) {
+    log('  ✅ 代碼正確');
+    recordScan();
+  } else {
+    warn('  ❌ 代碼不符');
+    alert('交易點代碼不符，請確認您在正確的地點。');
+  }
 };
 
 const startScan = async () => {
@@ -424,7 +412,7 @@ const startScan = async () => {
   // 相機僅在安全環境(HTTPS 或 localhost)可用；用區網 IP + http 測試會失敗
   if (!navigator.mediaDevices?.getUserMedia) {
     warn('  🔥 此環境無法使用相機（需 HTTPS）');
-    alert('無法開啟相機：請改用 HTTPS 網址（已部署的網站），或改用下方手動輸入識別碼。');
+    alert('無法開啟相機：請改用 HTTPS 網址（已部署的網站），或改用下方手動輸入交易點代碼。');
     return;
   }
   try {
@@ -437,8 +425,8 @@ const startScan = async () => {
     detectQR();
   } catch (e) {
     warn('  🔥 相機啟動失敗：', e.name, e.message);
-    if (e.name === 'NotAllowedError') alert('相機權限被拒絕，請到瀏覽器設定允許相機，或改用手動輸入識別碼。');
-    else alert('相機啟動失敗，請改用下方手動輸入識別碼。');
+    if (e.name === 'NotAllowedError') alert('相機權限被拒絕，請到瀏覽器設定允許相機，或改用手動輸入交易點代碼。');
+    else alert('相機啟動失敗，請改用下方手動輸入交易點代碼。');
   }
 };
 
@@ -461,11 +449,12 @@ const detectQR = async () => {
       const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
       if (code) {
-        log('  🔍 偵測到 QR：', code.data, '｜預期：', props.order.id);
-        if (code.data === props.order.id) {
-          log('  ✅ QR 比對成功，scanSuccess=true');
-          scanSuccess.value = true;
+        const scanned = code.data.trim().toUpperCase();
+        log('  🔍 偵測到 QR：', scanned, '｜預期：', expectedCode.value);
+        if (expectedCode.value && scanned === expectedCode.value) {
+          log('  ✅ QR 比對成功');
           stopScan();
+          recordScan();
           return;
         }
       }
@@ -473,30 +462,6 @@ const detectQR = async () => {
     requestAnimationFrame(loop);
   };
   loop();
-};
-
-const setReady = async () => {
-  const field = props.role === 'buy' ? 'buyerReady' : 'sellerReady';
-  log(`👉 點擊「就緒/我已就位」→ 準備寫入 ${field}=true`);
-  try {
-    await updateDoc(doc(db, "orders", props.order.id), { [field]: true, updatedAt: serverTimestamp() });
-    log(`✅ ${field}=true 已成功寫入 Firestore`);
-  } catch (e) {
-    warn(`🔥 寫入 ${field} 失敗（多半是 Firestore 規則或網路）：`, e.code, e.message);
-    alert('就緒狀態送出失敗，請檢查網路後重試。');
-  }
-};
-
-const handleDeal = async (agree) => {
-  const field = props.role === 'buy' ? 'buyerDeal' : 'sellerDeal';
-  log(`👉 點擊「${agree ? '願意成交' : '不成交'}」→ 準備寫入 ${field}=${agree}`);
-  try {
-    await updateDoc(doc(db, "orders", props.order.id), { [field]: agree, updatedAt: serverTimestamp() });
-    log(`✅ ${field}=${agree} 已成功寫入`);
-  } catch (e) {
-    warn(`🔥 寫入 ${field} 失敗：`, e.code, e.message);
-    alert('成交意願送出失敗，請重試。');
-  }
 };
 
 const MAX_PRICE = 10000;
@@ -562,7 +527,6 @@ const sellerConfirmPrice = async (agree) => {
       finalPrice: null,
       updatedAt: serverTimestamp()
     });
-    if (props.role === 'sell') step.value = 'confirm';
   }
 };
 </script>
@@ -582,10 +546,10 @@ const sellerConfirmPrice = async (agree) => {
   overflow-y: auto;
 }
 
-/* ── 頂部 header ── */
+/* ── 頂部 header（時間線已佔掉安全區留白，這裡不用再留） ── */
 .screen-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 52px 0 24px;
+  padding: 10px 0 24px;
 }
 .back-pill {
   background: #fff; border: 1px solid #e0e0e0;
@@ -595,29 +559,15 @@ const sellerConfirmPrice = async (agree) => {
 }
 .screen-title { font-size: 20px; font-weight: 900; color: #1a1a1a; letter-spacing: -0.5px; }
 
-/* ── QR 賣家 ── */
-.qr-hero { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-top: 12px; }
-.qr-label { font-size: 15px; font-weight: 700; color: #555; }
-.qr-wrapper {
-  width: 220px; height: 220px;
-  background: #fff; border-radius: 24px;
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.10);
-  padding: 10px;
-}
-.qr-canvas { width: 200px; height: 200px; }
-.qr-sub { font-size: 12px; font-weight: 800; color: #bbb; letter-spacing: 2px; }
-
-/* ── 掃描 買家 ── */
+/* ── 掃描（買賣雙方共用同一套 UI） ── */
 .scan-hero { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-top: 12px; }
-.scan-label { font-size: 15px; font-weight: 700; color: #555; }
+.scan-label { font-size: 15px; font-weight: 700; color: #555; text-align: center; }
 .scan-box {
   width: 240px; height: 240px; border-radius: 24px; overflow: hidden;
   position: relative; background: #111;
   box-shadow: 0 8px 32px rgba(0,0,0,0.15);
   transition: box-shadow 0.3s;
 }
-.scan-box.success { box-shadow: 0 0 0 4px #43a047, 0 8px 32px rgba(67,160,71,0.3); }
 .scan-video { width: 100%; height: 100%; object-fit: cover; }
 .scan-frame { position: absolute; inset: 0; pointer-events: none; }
 .corner {
@@ -638,12 +588,6 @@ const sellerConfirmPrice = async (agree) => {
   90%  { top: 210px; opacity: 1; }
   100% { top: 210px; opacity: 0; }
 }
-.scan-success-overlay {
-  position: absolute; inset: 0;
-  background: rgba(67,160,71,0.85);
-  display: flex; align-items: center; justify-content: center;
-}
-.check-big { font-size: 72px; color: #fff; }
 
 .scan-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
 .btn-scan {
@@ -662,31 +606,30 @@ const sellerConfirmPrice = async (agree) => {
   border: none; border-radius: 12px; font-weight: 800; font-size: 14px;
 }
 
-/* ── 等待 / 就緒 徽章 ── */
-.waiting-badge, .ready-badge {
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px 20px; border-radius: 14px;
-  font-size: 14px; font-weight: 700; margin-top: 8px;
+.scan-done-badge {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 16px 20px; border-radius: 14px; margin-top: 12px;
+  font-size: 14px; font-weight: 800; background: #e8f5e9; color: #2e7d32;
 }
-.waiting-badge { background: #fff8e1; color: #f57c00; }
-.ready-badge { background: #e8f5e9; color: #2e7d32; justify-content: center; }
-.buyer-ready { margin-top: 12px; }
+.safety-note {
+  margin-top: auto; padding-top: 20px;
+  font-size: 12px; color: #999; line-height: 1.6; text-align: center;
+}
 
+/* ── 就緒 / 等待 徽章 ── */
 .dot-pulse {
   width: 10px; height: 10px; border-radius: 50%;
   background: #f57c00;
   animation: pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
 }
 @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
 
-/* ── 就緒按鈕 ── */
+/* ── 安全交易按鈕 ── */
 .arrive-action { margin-top: auto; padding-top: 24px; }
 .btn-ready {
   width: 100%; height: 52px; border: none; border-radius: 16px;
-  font-size: 16px; font-weight: 900; cursor: pointer;
-  background: #e0e0e0; color: #aaa; transition: 0.25s;
-}
-.btn-ready.active, .btn-ready.seller {
+  font-size: 16px; font-weight: 900; cursor: pointer; transition: 0.25s;
   background: #1a1a1a; color: #fff;
 }
 .btn-ready:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -711,9 +654,11 @@ const sellerConfirmPrice = async (agree) => {
   display: flex; align-items: center; justify-content: center; gap: 12px;
   padding: 16px; background: #fff8e1; border-radius: 14px;
   font-size: 14px; font-weight: 700; color: #f57c00;
+  margin-top: 12px;
 }
+.price-wait { margin: auto; }
 
-/* ── 成交確認按鈕 ── */
+/* ── 成交確認按鈕（賣家確認金額用） ── */
 .confirm-actions { display: flex; gap: 14px; margin-top: auto; }
 .btn-deal {
   flex: 1; height: 52px; border: none; border-radius: 16px;
@@ -783,20 +728,28 @@ const sellerConfirmPrice = async (agree) => {
 .seller-price-sub { font-size: 13px; color: #bbb; font-weight: 600; }
 .seller-price-screen .confirm-actions { width: 100%; }
 
-/* ── 完成動畫 ── */
-.done-screen { align-items: center; justify-content: center; gap: 24px; }
-.done-animation { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+/* ── 完成畫面 ── */
+.done-screen { align-items: center; justify-content: center; gap: 20px; padding-top: 24px; }
+.done-animation { display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .done-circle {
-  width: 100px; height: 100px; border-radius: 50%;
+  width: 92px; height: 92px; border-radius: 50%;
   background: linear-gradient(135deg, #43a047, #2e7d32);
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 12px 40px rgba(67,160,71,0.4);
   animation: pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 @keyframes pop { 0% { transform: scale(0); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-.done-check { font-size: 52px; color: #fff; }
-.done-title { font-size: 28px; font-weight: 900; color: #1a1a1a; }
-.done-price { font-size: 18px; font-weight: 700; color: #43a047; }
+.done-check { font-size: 48px; color: #fff; }
+.done-title { font-size: 24px; font-weight: 900; color: #1a1a1a; }
+
+.done-actual-box {
+  width: 100%; background: #fff; border-radius: 18px; padding: 16px 18px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.done-actual-row { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: #666; }
+.done-actual-row.price { border-top: 1px solid #f0f0f0; padding-top: 10px; color: #1a1a1a; font-size: 15px; font-weight: 900; }
+
 .btn-done {
   width: 100%; height: 52px; background: #1a1a1a; color: #fff;
   border: none; border-radius: 16px; font-size: 16px; font-weight: 900;
