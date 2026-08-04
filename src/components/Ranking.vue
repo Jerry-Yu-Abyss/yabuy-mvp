@@ -8,6 +8,18 @@
     <p v-else-if="errorMsg" class="error-box">⚠️ {{ errorMsg }}</p>
 
     <template v-else>
+      <!-- 站台總覽（即時現況，非時間區間統計） -->
+      <div class="overview-row">
+        <div class="ov-chip">
+          <span class="ov-num">{{ overview.activeProducts }}</span>
+          <span class="ov-label">已上架商品</span>
+        </div>
+        <div class="ov-chip">
+          <span class="ov-num">{{ overview.totalUsers }}</span>
+          <span class="ov-label">註冊用戶</span>
+        </div>
+      </div>
+
       <p class="scope-hint">統計區間：{{ monthLabel }}（依成交時間）</p>
 
       <!-- ① 院所交易排行榜（直方圖） -->
@@ -116,6 +128,7 @@ const collegeRank = ref([]);
 const topUsers = ref([]);
 const unattributed = ref(0);
 const cumulative = ref({ items: 0, amount: 0, participants: 0, avg: 0 });
+const overview = ref({ activeProducts: 0, totalUsers: 0 });
 
 const now = new Date();
 const monthLabel = `${now.getFullYear()} 年 ${now.getMonth() + 1} 月`;
@@ -144,12 +157,20 @@ const loadRanking = async () => {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const [oSnap, uSnap] = await Promise.all([
+    const [oSnap, uSnap, pSnap] = await Promise.all([
       getDocs(collection(db, 'orders')),
-      getDocs(collection(db, 'users'))
+      getDocs(collection(db, 'users')),
+      getDocs(collection(db, 'products'))
     ]);
     const orders = oSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const products = pSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // 站台總覽：即時現況，跟下面「本月／歷史交易」統計不同維度，分開算
+    overview.value = {
+      activeProducts: products.filter((p) => p.status === 'active').length,
+      totalUsers: users.length
+    };
 
     const userCollege = {};
     const userName = {};
@@ -241,6 +262,15 @@ onMounted(loadRanking);
   background: #fff5f4; color: #b3423a; border: 1px solid #f0c8c4;
   border-radius: 14px; padding: 14px; font-size: 13px; font-weight: 700;
 }
+
+.overview-row { display: flex; gap: 10px; }
+.ov-chip {
+  flex: 1; background: #fff; border-radius: 16px; padding: 14px 12px;
+  box-shadow: 0 2px 10px rgba(47, 74, 58, 0.06);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.ov-num { font-size: 22px; font-weight: 900; color: #2f4a3a; line-height: 1.1; }
+.ov-label { font-size: 11px; color: #7f8c8d; font-weight: 700; }
 
 .scope-hint { margin: 0 0 2px 4px; font-size: 12px; color: #8a958d; font-weight: 700; }
 
