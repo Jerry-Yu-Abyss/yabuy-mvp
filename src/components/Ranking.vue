@@ -20,6 +20,33 @@
         </div>
       </div>
 
+      <!-- 各學院註冊人數（即時現況，非時間區間統計） -->
+      <section class="rank-card">
+        <header class="card-head">
+          <h3 class="card-title">各學院註冊人數</h3>
+          <span class="card-sub">目前累計</span>
+        </header>
+
+        <div v-if="collegeUserRank.some(c => c.count > 0)" class="histogram">
+          <div v-for="c in collegeUserRank" :key="c.college" class="hist-col">
+            <span class="hist-value">{{ c.count }}</span>
+            <div class="hist-bar-track">
+              <div
+                class="hist-bar"
+                :class="{ top: c.count > 0 && c.count === maxCollegeUserCount }"
+                :style="{ height: barHeight(c.count, maxCollegeUserCount) }"
+              ></div>
+            </div>
+            <span class="hist-label" :title="c.college">{{ c.short }}</span>
+          </div>
+        </div>
+        <p v-else class="empty-note">目前還沒有使用者設定學院。</p>
+
+        <p v-if="usersNoCollege > 0" class="foot-note">
+          另有 {{ usersNoCollege }} 位使用者尚未設定學院，無法歸類。
+        </p>
+      </section>
+
       <p class="scope-hint">統計區間：{{ monthLabel }}（依成交時間）</p>
 
       <!-- ① 院所交易排行榜（直方圖） -->
@@ -125,6 +152,8 @@ const SHORT_NAME = {
 const loading = ref(true);
 const errorMsg = ref('');
 const collegeRank = ref([]);
+const collegeUserRank = ref([]);
+const usersNoCollege = ref(0);
 const topUsers = ref([]);
 const unattributed = ref(0);
 const cumulative = ref({ items: 0, amount: 0, participants: 0, avg: 0 });
@@ -135,6 +164,9 @@ const monthLabel = `${now.getFullYear()} 年 ${now.getMonth() + 1} 月`;
 
 const maxCollegeCount = computed(() =>
   Math.max(0, ...collegeRank.value.map((c) => c.count))
+);
+const maxCollegeUserCount = computed(() =>
+  Math.max(0, ...collegeUserRank.value.map((c) => c.count))
 );
 const maxUserTotal = computed(() =>
   Math.max(0, ...topUsers.value.map((u) => u.total))
@@ -178,6 +210,19 @@ const loadRanking = async () => {
       userCollege[u.id] = u.college || '';
       userName[u.id] = u.displayName || '匿名同學';
     });
+
+    // ── 各學院註冊人數（即時現況，不看時間區間）──
+    const collegeUserCount = {};
+    colleges.forEach((c) => { collegeUserCount[c] = 0; });
+    let noCollegeUsers = 0;
+    users.forEach((u) => {
+      if (u.college && collegeUserCount[u.college] != null) collegeUserCount[u.college]++;
+      else noCollegeUsers++;
+    });
+    usersNoCollege.value = noCollegeUsers;
+    collegeUserRank.value = colleges
+      .map((c) => ({ college: c, short: SHORT_NAME[c] || c, count: collegeUserCount[c] }))
+      .sort((a, b) => b.count - a.count);
 
     const completed = orders.filter((o) => o.status === 'completed');
 
