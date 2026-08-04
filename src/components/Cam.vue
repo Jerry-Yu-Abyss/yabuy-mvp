@@ -29,7 +29,7 @@
         </div>
 
         <div v-else class="normal-category-container">
-          <div class="sub-label">商品分類</div>
+          <div class="sub-label">商品分類（必選）</div>
           <div class="pill-scroll">
             <div
               v-for="cat in productCategories"
@@ -39,6 +39,9 @@
               @click="form.category = cat"
             >{{ cat }}</div>
           </div>
+          <!-- 送出鍵沒選分類就會靜默鎖死（disabled 按鈕連 click 都不會觸發，
+               firebaseUpload 內的驗證永遠碰不到），這裡補一個看得到的原因提示。 -->
+          <p v-if="!form.category" class="field-hint">請至少選擇一個分類，才能送出</p>
         </div>
 
         <div class="input-pill textarea-pill">
@@ -341,6 +344,7 @@ const resetForm = () => {
 .category-display .placeholder { color: #c8a44a; }
 .normal-category-container { display: flex; flex-direction: column; gap: 8px; }
 .sub-label { font-size: 12px; font-weight: 800; color: #999; padding-left: 4px; }
+.field-hint { margin: 0; padding-left: 4px; font-size: 12px; color: #e67e22; font-weight: 700; }
 .pill-scroll {
   display: flex; flex-direction: row; gap: 8px;
   overflow-x: auto; -webkit-overflow-scrolling: touch;

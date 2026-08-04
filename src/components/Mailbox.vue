@@ -355,7 +355,8 @@ const canCancel = (order) =>
   activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
 
 const cancelOrder = async (order) => {
-  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？`)) return;
+  // 說明清楚取消後還能再發起，減少使用者第一次按 ✕ 時的猶豫
+  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？\n\n取消後這筆請求會關閉，但您隨時可以回到商品頁重新發起交易。`)) return;
   try {
     await updateDoc(doc(db, "orders", order.id), {
       status: 'rejected',
