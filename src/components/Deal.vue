@@ -92,7 +92,7 @@
 
       <div class="waiting-other" v-if="waitingForOther">
         <span class="dot-pulse"></span>
-        等待對方確認中...
+        {{ waitingText }}
       </div>
 
       <div class="confirm-actions" v-else>
@@ -108,35 +108,51 @@
         <div></div>
       </div>
 
-      <div class="price-hero">
-        <div class="price-context">
-          <span class="price-context-label">預定價格</span>
-          <span class="price-context-val">${{ liveOrder.productPrice }}</span>
+      <!-- 已送出：金額寫入後 step 仍停在 'price'，改顯示等待狀態而非可再送出的表單 -->
+      <template v-if="priceSubmitted">
+        <div class="price-hero">
+          <div class="price-context">
+            <span class="price-context-label">已送出金額</span>
+            <span class="price-context-val">${{ liveOrder.finalPrice }}</span>
+          </div>
         </div>
-        <p class="price-desc">請輸入本次實際議定的成交金額（上限 $10,000）</p>
-        <div class="price-input-wrap">
-          <span class="currency-sign">$</span>
-          <input 
-            v-model.number="finalPrice" 
-            type="number" 
-            class="price-input" 
-            placeholder="0"
-            min="0"
-            max="10000"
-            @input="capPrice"
-          />
+        <div class="waiting-other">
+          <span class="dot-pulse"></span>
+          等待賣家確認金額...
         </div>
-        <p v-if="finalPrice > 10000" class="price-warn">⚠️ 金額不可超過 $10,000</p>
-      </div>
+      </template>
 
-      <button 
-        class="btn-submit-price"
-        :disabled="!finalPrice || finalPrice <= 0 || finalPrice > 10000 || submittingPrice"
-        @click="submitPrice"
-      >
-        <span v-if="submittingPrice" class="spinner"></span>
-        <span v-else>送出金額給賣家確認</span>
-      </button>
+      <template v-else>
+        <div class="price-hero">
+          <div class="price-context">
+            <span class="price-context-label">預定價格</span>
+            <span class="price-context-val">${{ liveOrder.productPrice }}</span>
+          </div>
+          <p class="price-desc">請輸入本次實際議定的成交金額（上限 $10,000）</p>
+          <div class="price-input-wrap">
+            <span class="currency-sign">$</span>
+            <input
+              v-model.number="finalPrice"
+              type="number"
+              class="price-input"
+              placeholder="0"
+              min="0"
+              max="10000"
+              @input="capPrice"
+            />
+          </div>
+          <p v-if="finalPrice > 10000" class="price-warn">⚠️ 金額不可超過 $10,000</p>
+        </div>
+
+        <button
+          class="btn-submit-price"
+          :disabled="!finalPrice || finalPrice <= 0 || finalPrice > 10000 || submittingPrice"
+          @click="submitPrice"
+        >
+          <span v-if="submittingPrice" class="spinner"></span>
+          <span v-else>送出金額給賣家確認</span>
+        </button>
+      </template>
     </div>
 
     <div v-if="step === 'seller-confirm-price'" class="deal-screen seller-price-screen">
@@ -283,11 +299,28 @@ const buyerReady  = computed(() => liveOrder.value.buyerReady  === true);
 const sellerReady = computed(() => liveOrder.value.sellerReady === true);
 const buyerDeal   = computed(() => liveOrder.value.buyerDeal);
 const sellerDeal  = computed(() => liveOrder.value.sellerDeal);
+// 「我方已表態，但流程還不能往下走」→ 顯示等待中。
+// ⚠️ 不可用「對方 === undefined」判斷：對方若先表態，其值已是 true 而非 undefined，
+//    會導致本方表態後等待提示不顯示、按鈕又跑回來，看起來像按了沒反應。
 const waitingForOther = computed(() => {
-  if (props.role === 'buy')  return liveOrder.value.buyerDeal  === true && liveOrder.value.sellerDeal  === undefined;
-  if (props.role === 'sell') return liveOrder.value.sellerDeal === true && liveOrder.value.buyerDeal   === undefined;
+  const o = liveOrder.value;
+  if (props.role === 'buy')  return o.buyerDeal === true && o.sellerDeal !== true;
+  // 賣家：對方尚未同意，或雙方都同意但買家還沒送出金額，都算等待中
+  if (props.role === 'sell') return o.sellerDeal === true && (o.buyerDeal !== true || !o.finalPrice);
   return false;
 });
+
+// 等待的原因不同，文案也不同，讓使用者知道現在在等什麼
+const waitingText = computed(() => {
+  const o = liveOrder.value;
+  if (props.role === 'sell' && o.sellerDeal === true && o.buyerDeal === true && !o.finalPrice) {
+    return '等待買家輸入成交金額...';
+  }
+  return '等待對方確認中...';
+});
+
+// 買家已送出金額、等待賣家確認（以 Firestore 快照為準，不看本地送出狀態）
+const priceSubmitted = computed(() => Number(liveOrder.value.finalPrice) > 0);
 
 // ✅ 核心同步邏輯
 onMounted(() => {
@@ -334,22 +367,32 @@ const syncStep = () => {
     emit('close');
     return;
   }
-  if (o.buyerReady && o.sellerReady && step.value === 'verify') {
+  // ⚠️ 分支順序＝流程由後往前，且只依 Firestore 狀態推導，不依賴目前的 step。
+  //    早期版本把「雙方就緒」放在最前面且限定 step==='verify'，導致關掉 Deal 再重開時，
+  //    即使雙方早已同意成交，也會退回「確認成交？」畫面並重新顯示按鈕。
+  if (o.buyerDeal === true && o.sellerDeal === true) {
+    if (props.role === 'buy') {
+      // 金額未送出 → 出價表單；已送出 → 同一畫面顯示「等待賣家確認」（見 priceSubmitted）
+      log('  💰 分支[雙方同意, 買家] → step=price');
+      step.value = 'price';
+      return;
+    }
+    if (props.role === 'sell') {
+      // 買家還沒送金額時停在 confirm，由 waitingForOther 顯示「等待買家輸入成交金額」
+      const next = o.finalPrice ? 'seller-confirm-price' : 'confirm';
+      log(`  💰 分支[雙方同意, 賣家] → step=${next}`);
+      step.value = next;
+      return;
+    }
+  }
+  if (o.buyerReady && o.sellerReady) {
     log('  🤝 分支[雙方就緒] → step=confirm（開始交易）');
     step.value = 'confirm';
     return;
   }
-  if (o.buyerDeal === true && o.sellerDeal === true) {
-    if (props.role === 'buy' && !o.finalPrice) { log('  💰 分支[雙方同意, 買家輸入價格] → step=price'); step.value = 'price'; return; }
-    if (props.role === 'sell' && o.finalPrice) { log('  💰 分支[雙方同意, 賣家確認價格] → step=seller-confirm-price'); step.value = 'seller-confirm-price'; return; }
-  }
 
-  // ⚠️ 沒有任何分支命中：畫面會「停在原地不更新」。
-  //    對照下面數值，常見原因：
-  //    1) buyerReady / sellerReady 只有一邊是 true（對方的「就緒」沒寫進 Firestore）。
-  //    2) step 已不是 'verify'，但雙方就緒條件才剛成立（verify→confirm 只在 step==='verify' 時觸發）。
-  //    3) 雙方都同意了，但 finalPrice 還沒送出（賣家會卡住，要等買家送價）。
-  warn('🟡 syncStep 沒有命中任何分支 → 畫面維持 step =', step.value, '｜目前狀態：', peek(o));
+  // 沒有命中：代表還在等對方按「就緒」，畫面維持 verify 是正確的
+  log('🟡 尚未達成下一階段條件 → 維持 step =', step.value, '｜目前狀態：', peek(o));
 };
 
 const drawQR = async () => {
@@ -478,6 +521,9 @@ const submitPrice = async () => {
   } catch (e) {
     warn('🔥 送出價格失敗：', e.code, e.message);
     alert('送出失敗');
+  } finally {
+    // 成功路徑也必須解除 loading：寫入成功後 step 仍停在 'price'
+    // （syncStep 沒有對應分支），漏掉這行會讓送出鍵永遠轉圈圈。
     submittingPrice.value = false;
   }
 };
