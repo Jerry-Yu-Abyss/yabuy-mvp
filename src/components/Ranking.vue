@@ -58,12 +58,12 @@
 
         <div v-if="collegeRank.some(c => c.count > 0)" class="histogram">
           <div v-for="c in collegeRank" :key="c.college" class="hist-col">
-            <span class="hist-value">{{ c.count }}</span>
+            <span class="hist-value">{{ countDisplay(c.count) }}</span>
             <div class="hist-bar-track">
               <div
                 class="hist-bar"
                 :class="{ top: c.count > 0 && c.count === maxCollegeCount }"
-                :style="{ height: barHeight(c.count, maxCollegeCount) }"
+                :style="{ height: countBarSize(c.count) }"
               ></div>
             </div>
             <span class="hist-label" :title="c.college">{{ c.short }}</span>
@@ -88,9 +88,9 @@
             <span class="hbar-rank" :class="rankClass(i)">{{ i + 1 }}</span>
             <span class="hbar-name" :title="u.name">{{ u.name }}</span>
             <div class="hbar-track">
-              <div class="hbar-fill" :style="{ width: barWidth(u.total, maxUserTotal) }"></div>
+              <div class="hbar-fill" :style="{ width: countBarSize(u.total) }"></div>
             </div>
-            <span class="hbar-value">{{ u.total }}</span>
+            <span class="hbar-value">{{ countDisplay(u.total) }}</span>
           </div>
         </div>
         <p v-else class="empty-note">本月尚無完成交易的使用者。</p>
@@ -168,17 +168,19 @@ const maxCollegeCount = computed(() =>
 const maxCollegeUserCount = computed(() =>
   Math.max(0, ...collegeUserRank.value.map((c) => c.count))
 );
-const maxUserTotal = computed(() =>
-  Math.max(0, ...topUsers.value.map((u) => u.total))
-);
 
-// 高度/寬度都保留最小可見值，讓「有資料但數量很少」不會看起來像沒有資料
-const barHeight = (v, max) => (!max || !v ? '2px' : `${Math.max(4, (v / max) * 100)}%`);
-const barWidth = (v, max) => (!max || !v ? '2px' : `${Math.max(4, (v / max) * 100)}%`);
+// 院所交易排行／交易王都改用固定比例尺，不是跟同儕比的相對高度：
+// 1 件 = 5% 高度/寬度 → 滿版（100%）代表 20 件。件數通常差距不大（個位數到十位數），
+// 相對高度會讓「1 件 vs 0 件」誇大成「爆滿 vs 全空」；固定比例尺才看得出真實規模，
+// 也跟下面「各學院註冊人數」的固定比例尺邏輯一致。
+const COUNT_SCALE_MAX = 20;
+const countBarSize = (v) => (!v ? '2px' : `${Math.min(100, Math.max(4, (v / COUNT_SCALE_MAX) * 100))}%`);
 
-// 各學院註冊人數改用固定比例尺，不是跟同儕比的相對高度：
-// 50 人 = 10% 高度 → 滿版（100%）代表 500 人。學院之間人數差距通常不大，
-// 相對高度會讓小差距被誇大成「爆滿 vs 全空」；固定比例尺才看得出真實規模。
+// 數字一律顯示精確件數（不因長條封頂而改成「20+」）；
+// 只有長條的高度/寬度會封頂在 100%，數字本身永遠是真實值。
+const countDisplay = (v) => String(v);
+
+// 各學院註冊人數：50 人 = 10% 高度 → 滿版（100%）代表 500 人（人數規模跟交易件數不同，比例尺分開）。
 const REG_SCALE_MAX = 500;
 const regBarHeight = (v) => (!v ? '2px' : `${Math.min(100, Math.max(4, (v / REG_SCALE_MAX) * 100))}%`);
 const rankClass = (i) => (i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '');
@@ -388,7 +390,7 @@ onMounted(loadRanking);
   background: linear-gradient(90deg, #acc6b1, #5a9461);
   transition: width 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
-.hbar-value { width: 20px; flex-shrink: 0; text-align: right; font-size: 12px; font-weight: 900; color: #2f4a3a; }
+.hbar-value { width: 30px; flex-shrink: 0; text-align: right; font-size: 12px; font-weight: 900; color: #2f4a3a; }
 
 /* ── ③ 累計數據 ── */
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
