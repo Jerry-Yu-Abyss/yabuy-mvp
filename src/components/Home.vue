@@ -22,20 +22,29 @@
         <p>正在搜尋校園周邊商品...</p>
       </div>
 
-      <div 
-        v-for="(item, index) in cardStack" 
-        :key="item.id" 
-        class="card-wrapper" 
-        :style="getCardStyle(index)" 
-        @touchstart="handleTouchStart" 
-        @touchmove="handleTouchMove" 
+      <div
+        v-for="(item, index) in cardStack"
+        :key="item.id"
+        class="card-wrapper"
+        :style="getCardStyle(index)"
+        @touchstart="handleTouchStart"
+        @touchmove="handleTouchMove"
         @touchend="handleTouchEnd"
       >
-        <div class="unified-card">
+        <!-- 廣告卡：風格刻意跟商品卡不同（見 AdCard.vue），沿用同一套滑動手勢；
+             廣告沒有「喜愛」的意義，一律走略過（不會加入收藏），方向固定往左滑出 -->
+        <div v-if="item.type === 'ad'" class="unified-card">
+          <AdCard
+            :ad="item" :active="index === 0"
+            @skip="swipeCard('dislike')"
+          />
+        </div>
+
+        <div v-else class="unified-card">
           <div class="card-top-img" :style="{ backgroundColor: item.color || '#f1f0ee' }">
             <img v-if="item.url" :src="item.url" class="full-img" />
             <div v-else class="img-placeholder">Product Image</div>
-            
+
             <div v-if="isNewProduct(item.createdAt)" class="new-arrival-tag">
               <span class="pulse-dot"></span> NEW
             </div>
@@ -94,11 +103,12 @@ import { db, auth } from '@/firebase';
 import { toast } from './toast.js';
 import { blockUnverifiedForTrade } from './verify.js';
 import { onAuthStateChanged } from 'firebase/auth'; 
-import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore'; 
+import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
 import IconSend from '@/assets/icons/send.svg?component';
 import IconThumbsUp from '@/assets/icons/thumbs-up.svg?component';
 import IconThumbsDown from '@/assets/icons/thumbs-down.svg?component';
 import TradeModal from './TradeModal.vue';
+import AdCard from './AdCard.vue';
 
 // --- 狀態管理 ---
 const selectedProduct = ref(null);
@@ -108,6 +118,7 @@ const touch = reactive({ x: 0, startX: 0, isMoving: false });
 
 let unsubscribeProducts = null;
 let unsubscribeFavorites = null;
+let unsubscribeAds = null;
 let rawProducts = [];
 const favoriteIds = new Set();
 let animatingId = null;
@@ -123,6 +134,64 @@ const getInitialSeenIds = () => {
 };
 // 將已看過的商品永久記在瀏覽器
 const seenIds = getInitialSeenIds();
+
+// ================= 🌟 廣告投放 =================
+// 規則：每滑過 10 個「真實商品」就穿插 1 則廣告；若同時有多則廣告上架，
+// 用洗牌過的順序輪流選，避免每次都固定同一個順序。
+const AD_INTERVAL = 10;
+let rawAds = [];          // 從 Firestore ads 集合抓到的所有廣告（含未上架/已下架）
+let shuffledAdPool = [];  // 目前有效（在上下架期限內）廣告，洗牌過一次
+let adRotationIndex = 0;  // 輪到第幾則廣告（用餘數循環，讓多則廣告輪流出現）
+
+// 🌟 使用者這個 session 已經略過的廣告（存廣告的 Firestore 文件 id，不是插槽合成的 id）。
+// 重要：updateCardStack 每滑一張卡就會整個重算一次，若沒有這層排除，剛被滑掉的廣告
+// 因為「累計商品數」「還沒滿 10 個商品」的節奏或保底邏輯都沒變，下一次重算會用一模一樣的
+// 條件把同一則廣告原封不動地排回同一個位置 —— 使用者會看到「怎麼滑都滑不掉」。
+// 只在當前分頁存活期間有效（不寫 localStorage），下次重新整理廣告就會恢復輪播。
+const dismissedAdIds = new Set();
+
+// 累計已滑過的「真實商品」數量（廣告本身不計入），用來決定下一則廣告要插在哪裡。
+// 注意：一定要用這種「持續累加」的計數器，不能用「目前剩餘清單的第幾筆」來算——
+// 因為 cardStack 每滑一張就會用 updateCardStack() 整個重算一次，若用相對位置，
+// 每次重算都會把節奏歸零，永遠湊不滿 10 個。
+const getInitialSwipedCount = () => {
+  try { return Number(localStorage.getItem('YaBuy_AdSwipedCount')) || 0; } catch (e) { return 0; }
+};
+const swipedProductCount = ref(getInitialSwipedCount());
+
+const isAdActive = (ad, now = new Date()) => {
+  const start = ad.startDate?.toDate ? ad.startDate.toDate() : (ad.startDate ? new Date(ad.startDate) : null);
+  const end = ad.endDate?.toDate ? ad.endDate.toDate() : (ad.endDate ? new Date(ad.endDate) : null);
+  if (start && now < start) return false;
+  if (end && now > end) return false;
+  return true;
+};
+
+const shuffleArray = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// ads 資料一有變動（新增/修改/刪除/期限切換）就重新洗牌一次，重置輪替起點
+const rebuildAdPool = () => {
+  shuffledAdPool = shuffleArray(rawAds.filter(a => isAdActive(a)));
+  adRotationIndex = 0;
+};
+
+const pickNextAd = () => {
+  if (shuffledAdPool.length === 0) return null;
+  // 最多繞完整個池子一輪；全部都被使用者略過的話就不硬塞
+  for (let tries = 0; tries < shuffledAdPool.length; tries++) {
+    const ad = shuffledAdPool[adRotationIndex % shuffledAdPool.length];
+    adRotationIndex++;
+    if (!dismissedAdIds.has(ad.id)) return ad;
+  }
+  return null;
+};
 
 const requireLogin = () => {
   if (!auth.currentUser) {
@@ -182,17 +251,39 @@ const updateCardStack = (user) => {
     const isSeen = seenIds.has(p.id);
     // 嚴格規定：不能是自己的、不能被收藏過、不能看過，才會發放到畫面上
     return !isOwn && !isFav && !isSeen;
+  }).map(p => ({ ...p, type: 'product' }));
+
+  // 🌟 按累計滑過商品數，每滿 10 個就在後面插 1 則廣告（見上方 swipedProductCount 註解）
+  const withAds = [];
+  const usedAdIds = new Set(); // 這次 recompute 裡，哪些廣告已經透過「每 10 個」節奏排進去了
+  validProducts.forEach((p, i) => {
+    withAds.push(p);
+    const globalCount = swipedProductCount.value + i + 1;
+    if (globalCount % AD_INTERVAL === 0) {
+      const ad = pickNextAd();
+      // 同一則廣告可能因為輪替被排到好幾個插槽，id 要帶上插槽序號才不會跟 :key 衝突；
+      // adDocId 保留原本的 Firestore 文件 id，滑掉時要用這個去記錄「已略過」
+      if (ad) { withAds.push({ ...ad, adDocId: ad.id, id: `ad-${ad.id}-${globalCount}`, type: 'ad' }); usedAdIds.add(ad.id); }
+    }
+  });
+
+  // 🌟 保底邏輯：商品數不夠湊到下一個 10 的倍數時（例如上架中的商品總數很少、
+  // 或已經滑到只剩幾張），上面的節奏迴圈永遠不會觸發，廣告就會完全沒機會出現。
+  // 這裡把「目前有效但這次沒被排到、也還沒被使用者略過」的廣告，一定補插在整疊卡片的
+  // 最底部，確保只要廣告還在上架期限內，使用者遲早會滑到它。
+  rawAds.filter(a => isAdActive(a) && !dismissedAdIds.has(a.id)).forEach(ad => {
+    if (!usedAdIds.has(ad.id)) withAds.push({ ...ad, adDocId: ad.id, id: `ad-bottom-${ad.id}`, type: 'ad' });
   });
 
   if (animatingId) {
     const animatingCard = cardStack.value.find(c => c.id === animatingId);
     if (animatingCard) {
-      cardStack.value = [animatingCard, ...validProducts.filter(p => p.id !== animatingId)];
+      cardStack.value = [animatingCard, ...withAds.filter(p => p.id !== animatingId)];
       return;
     }
   }
 
-  cardStack.value = validProducts;
+  cardStack.value = withAds;
 };
 
 // 🌟 全新重置按鈕邏輯：一鍵清除快取並瞬間補回卡片
@@ -262,28 +353,63 @@ const addToFavorites = async (product) => {
 };
 
 const swipeCard = (dir) => {
-  if (!requireLogin()) return; 
-  
+  if (!requireLogin()) return;
+
   const currentItem = cardStack.value[0];
   if (!currentItem) return;
   animatingId = currentItem.id;
 
+  // 🌟 廣告卡：不算收藏、不佔用 seenIds（廣告是每次重算即時插入的，不是來自 rawProducts），
+  // 純粹滑掉即可，節奏計數器也不會被廣告影響（只算真實商品）。
+  if (currentItem.type === 'ad') {
+    // 🌟 記住這則廣告已經被略過，updateCardStack 重算時才不會把它原封不動排回同一個位置
+    // （否則節奏／保底條件都沒變，馬上就會被排回來，使用者會覺得「滑不掉」）
+    if (currentItem.adDocId) dismissedAdIds.add(currentItem.adDocId);
+    touch.x = dir === 'like' ? 1000 : -1000;
+    setTimeout(() => {
+      if (cardStack.value.length > 0 && cardStack.value[0].id === animatingId) cardStack.value.shift();
+      animatingId = null; touch.x = 0;
+      updateCardStack(auth.currentUser);
+    }, 300);
+    return;
+  }
+
   // 🌟 將滑過的卡片永久寫入 LocalStorage
   seenIds.add(currentItem.id);
   localStorage.setItem('YaBuy_SeenIds', JSON.stringify([...seenIds]));
-  
+
+  // 🌟 廣告節奏計數器：只有真實商品才累加、持久化
+  swipedProductCount.value++;
+  try { localStorage.setItem('YaBuy_AdSwipedCount', String(swipedProductCount.value)); } catch (e) { /* 忽略儲存失敗 */ }
+
   if (dir === 'like') addToFavorites(currentItem);
   touch.x = dir === 'like' ? 1000 : -1000;
-  
-  setTimeout(() => { 
+
+  setTimeout(() => {
     if (cardStack.value.length > 0 && cardStack.value[0].id === animatingId) cardStack.value.shift();
-    animatingId = null; touch.x = 0; 
+    animatingId = null; touch.x = 0;
     updateCardStack(auth.currentUser);
   }, 300);
 };
 
-onMounted(() => { onAuthStateChanged(auth, initDataSync); });
-onUnmounted(() => { unsubscribeProducts?.(); unsubscribeFavorites?.(); });
+// 🌟 廣告不需要登入即可讀（跟商品一樣公開），所以獨立於 auth 狀態抓取，
+// 一進首頁就開始監聽；新增/修改/下架都會即時反映在卡片堆疊裡。
+const fetchAds = () => {
+  const qAds = query(collection(db, "ads"), orderBy("createdAt", "desc"));
+  unsubscribeAds = onSnapshot(qAds, (snapshot) => {
+    rawAds = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    rebuildAdPool();
+    updateCardStack(auth.currentUser);
+  }, (err) => {
+    console.error("[Home] 廣告監聽失敗：", err.code, err.message);
+  });
+};
+
+onMounted(() => {
+  onAuthStateChanged(auth, initDataSync);
+  fetchAds();
+});
+onUnmounted(() => { unsubscribeProducts?.(); unsubscribeFavorites?.(); unsubscribeAds?.(); });
 
 const openTrade = async (item) => { 
   if (!requireLogin()) return;

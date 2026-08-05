@@ -15,6 +15,7 @@
           <div class="tab-item" :class="{ active: currentTab === 'users' }" @click="switchTab('users')">用戶管理</div>
           <div class="tab-item" :class="{ active: currentTab === 'audit' }" @click="switchTab('audit')">安全與交易日誌</div>
           <div class="tab-item" :class="{ active: currentTab === 'broadcast' }" @click="switchTab('broadcast')">系統公告</div>
+          <div class="tab-item" :class="{ active: currentTab === 'ads' }" @click="switchTab('ads')">廣告管理</div>
           <div class="tab-item" :class="{ active: currentTab === 'indicate' }" @click="switchTab('indicate')">📊 指標</div>
         </div>
       </div>
@@ -239,7 +240,96 @@
         </div>
       </template>
 
-      <!-- 5. 營運指標 -->
+      <!-- 5. 廣告管理 -->
+      <template v-if="currentTab === 'ads'">
+        <div class="broadcast-container">
+          <div class="broadcast-header-info">
+            <h3>📢 {{ editingAdId ? '編輯廣告' : '新增廣告' }}</h3>
+            <p>廣告會依上下架期限，自動穿插在首頁的商品卡片堆疊中（每 10 件商品出現 1 次；若同時有多則廣告上架，出現順序會自動洗牌輪替）。</p>
+          </div>
+
+          <form @submit.prevent="saveAd" class="broadcast-form">
+            <div class="form-group">
+              <label>輪播圖片（最多 3 張，至少上傳 1 張）</label>
+              <div class="ad-image-slots">
+                <div v-for="(slot, i) in adImageSlots" :key="i" class="ad-image-slot" @click="triggerAdFile(i)">
+                  <img v-if="slot.preview || slot.existingUrl" :src="slot.preview || slot.existingUrl" class="ad-slot-preview" />
+                  <div v-else class="ad-slot-empty">＋</div>
+                  <input type="file" accept="image/*" :ref="el => (adFileInputs[i] = el)" class="ad-file-input" @change="onAdImageChange(i, $event)" />
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>宣傳名稱</label>
+              <input v-model="adForm.title" type="text" placeholder="例如：校園書局開學優惠..." required class="admin-input" />
+            </div>
+
+            <div class="form-group">
+              <label>宣傳細項</label>
+              <textarea v-model="adForm.description" placeholder="請輸入廣告詳細內容..." rows="3" class="admin-textarea"></textarea>
+            </div>
+
+            <div class="form-group">
+              <label>連結傳送按鈕網址</label>
+              <input v-model="adForm.linkUrl" type="url" placeholder="https://..." class="admin-input" />
+            </div>
+
+            <div class="form-group">
+              <label>上架期限</label>
+              <div class="date-range-row">
+                <input v-model="adForm.startDate" type="date" required class="admin-input" />
+                <span class="date-range-sep">～</span>
+                <input v-model="adForm.endDate" type="date" required class="admin-input" />
+              </div>
+            </div>
+
+            <div class="ad-form-actions">
+              <button v-if="editingAdId" type="button" class="btn-cancel-edit" @click="resetAdForm">取消編輯</button>
+              <button type="submit" class="btn-submit-broadcast" :disabled="isSavingAd">
+                {{ isSavingAd ? '處理中...' : (editingAdId ? '💾 儲存變更' : '🚀 建立廣告') }}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="history-broadcast-container">
+          <div class="history-header">
+            <h3>📋 廣告清單</h3>
+            <span class="badge-count">{{ allAds.length }} 則</span>
+          </div>
+
+          <div v-if="loadingAds" class="state-hint-small">載入中...</div>
+
+          <div v-else-if="allAds.length > 0" class="admin-product-list">
+            <div v-for="ad in allAds" :key="ad.id" class="admin-item-card">
+              <div class="item-img-box">
+                <img v-if="ad.images && ad.images[0]" :src="ad.images[0]" class="item-img" />
+                <div v-else class="item-placeholder">📢</div>
+              </div>
+
+              <div class="item-details">
+                <h3 class="item-name">{{ ad.title }}</h3>
+                <div class="item-meta">
+                  <span class="meta-tag" :class="'ad-status-' + getAdStatus(ad).cls">{{ getAdStatus(ad).label }}</span>
+                </div>
+                <div class="seller-info">
+                  <span>{{ formatDateShort(ad.startDate) }} ～ {{ formatDateShort(ad.endDate) }}</span>
+                </div>
+              </div>
+
+              <div class="item-actions-col">
+                <button class="btn-outline-small" @click="editAd(ad)">編輯</button>
+                <button class="btn-force-delete" @click="deleteAd(ad)">刪除</button>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="state-hint-small empty">目前沒有任何廣告。</div>
+        </div>
+      </template>
+
+      <!-- 6. 營運指標 -->
       <template v-if="currentTab === 'indicate'">
         <Indicate />
       </template>
@@ -341,11 +431,12 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue';
-import { db, auth, functions } from '@/firebase';
+import { ref, reactive, onMounted, onUnmounted, computed } from 'vue';
+import { db, auth, functions, storage } from '@/firebase';
 import { httpsCallable } from 'firebase/functions';
 import { toast, confirmDialog } from './toast.js';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, addDoc, serverTimestamp, getDocs, updateDoc } from 'firebase/firestore';
+import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Indicate from './Indicate.vue';
 
 const emit = defineEmits(['back']);
@@ -623,22 +714,193 @@ const deleteBroadcast = async (id, title) => {
   } catch (error) { toast("❌ 刪除失敗：" + error.message); }
 };
 
+// ================= 4. 廣告管理邏輯 =================
+const loadingAds = ref(true);
+const allAds = ref([]);
+let unsubscribeAdsList = null;
+
+const fetchAllAds = () => {
+  loadingAds.value = true;
+  const q = query(collection(db, "ads"), orderBy("createdAt", "desc"));
+  unsubscribeAdsList = onSnapshot(q, (snapshot) => {
+    allAds.value = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    loadingAds.value = false;
+  }, (err) => {
+    console.error("[Admin] 廣告監聽失敗（規則/索引）：", err.code, err.message);
+    loadingAds.value = false;
+  });
+};
+
+const blankAdForm = () => ({ title: '', description: '', linkUrl: '', startDate: '', endDate: '' });
+const adForm = ref(blankAdForm());
+const editingAdId = ref(null);
+const isSavingAd = ref(false);
+// 3 個輪播圖片欄位：existingUrl 是編輯時原本就有的網址，blob 是使用者這次新選的檔案（優先使用）
+const adImageSlots = reactive([
+  { preview: null, blob: null, existingUrl: '' },
+  { preview: null, blob: null, existingUrl: '' },
+  { preview: null, blob: null, existingUrl: '' }
+]);
+// 純粹拿來觸發隱藏 <input type="file"> 的 click()，不需要響應式
+const adFileInputs = [];
+const triggerAdFile = (i) => { adFileInputs[i]?.click(); };
+
+// 跟 Cam.vue 上傳商品圖同一套壓縮邏輯：限寬 1024px、轉 jpeg 0.7 品質
+const compressAdImage = (img, callback) => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const maxWidth = 1024;
+  let width = img.width, height = img.height;
+  if (width > maxWidth) { height = (maxWidth / width) * height; width = maxWidth; }
+  canvas.width = width; canvas.height = height;
+  ctx.drawImage(img, 0, 0, width, height);
+  canvas.toBlob((blob) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onloadend = () => callback(blob, reader.result);
+  }, 'image/jpeg', 0.7);
+};
+
+const onAdImageChange = (i, e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // 讓使用者重選同一張檔案時也能觸發 change
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) { toast.error('❌ 圖片過大（上限 10MB）'); return; }
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.src = ev.target.result;
+    img.onload = () => {
+      compressAdImage(img, (blob, dataUrl) => {
+        adImageSlots[i].blob = blob;
+        adImageSlots[i].preview = dataUrl;
+      });
+    };
+    img.onerror = () => toast.error('❌ 圖片格式無法解析，請換一張');
+  };
+};
+
+const tsToDateInputStr = (ts) => {
+  if (!ts?.toDate) return '';
+  const d = ts.toDate();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const formatDateShort = (ts) => {
+  if (!ts?.toDate) return '未設定';
+  const d = ts.toDate();
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+};
+
+// 廣告狀態徽章：未開始 / 上架中 / 已下架（純前端依日期即時判斷，不額外存 status 欄位）
+const getAdStatus = (ad) => {
+  const now = new Date();
+  const start = ad.startDate?.toDate ? ad.startDate.toDate() : null;
+  const end = ad.endDate?.toDate ? ad.endDate.toDate() : null;
+  if (start && now < start) return { label: '⏳ 未開始', cls: 'upcoming' };
+  if (end && now > end) return { label: '⛔ 已下架', cls: 'expired' };
+  return { label: '✅ 上架中', cls: 'active' };
+};
+
+const resetAdForm = () => {
+  editingAdId.value = null;
+  adForm.value = blankAdForm();
+  adImageSlots.forEach(s => { s.preview = null; s.blob = null; s.existingUrl = ''; });
+};
+
+const editAd = (ad) => {
+  editingAdId.value = ad.id;
+  adForm.value = {
+    title: ad.title || '',
+    description: ad.description || '',
+    linkUrl: ad.linkUrl || '',
+    startDate: tsToDateInputStr(ad.startDate),
+    endDate: tsToDateInputStr(ad.endDate)
+  };
+  const imgs = ad.images || [];
+  adImageSlots.forEach((s, i) => { s.existingUrl = imgs[i] || ''; s.preview = null; s.blob = null; });
+  document.querySelector('.admin-content-area')?.scrollTo({ top: 0, behavior: 'smooth' });
+};
+
+const saveAd = async () => {
+  if (!adForm.value.startDate || !adForm.value.endDate) { toast.error('❌ 請設定上下架期限'); return; }
+  if (new Date(adForm.value.startDate) > new Date(adForm.value.endDate)) { toast.error('❌ 上架日期不能晚於下架日期'); return; }
+
+  const filledSlots = adImageSlots.filter(s => s.blob || s.existingUrl);
+  if (filledSlots.length === 0) { toast.error('❌ 請至少上傳 1 張輪播圖片'); return; }
+
+  isSavingAd.value = true;
+  try {
+    // 只上傳「這次新選的」圖片，沒換過的欄位沿用原本網址
+    const images = [];
+    for (let i = 0; i < adImageSlots.length; i++) {
+      const slot = adImageSlots[i];
+      if (slot.blob) {
+        const fileName = `ads/${Date.now()}-${i}.jpg`;
+        const storageRef = sRef(storage, fileName);
+        const uploadResult = await uploadBytes(storageRef, slot.blob);
+        images.push(await getDownloadURL(uploadResult.ref));
+      } else if (slot.existingUrl) {
+        images.push(slot.existingUrl);
+      }
+    }
+
+    const payload = {
+      title: adForm.value.title.trim(),
+      description: adForm.value.description.trim(),
+      linkUrl: adForm.value.linkUrl.trim(),
+      images,
+      startDate: new Date(`${adForm.value.startDate}T00:00:00`),
+      endDate: new Date(`${adForm.value.endDate}T23:59:59`)
+    };
+
+    if (editingAdId.value) {
+      await updateDoc(doc(db, "ads", editingAdId.value), payload);
+      await writeAuditLog('admin', '編輯廣告', `管理員編輯了廣告「${payload.title}」。`, { adId: editingAdId.value });
+      toast.success('✅ 廣告已更新！');
+    } else {
+      const docRef = await addDoc(collection(db, "ads"), { ...payload, createdAt: serverTimestamp() });
+      await writeAuditLog('admin', '新增廣告', `管理員建立了新廣告「${payload.title}」。`, { adId: docRef.id });
+      toast.success('✅ 廣告已建立！');
+    }
+    resetAdForm();
+  } catch (error) {
+    console.error('[Admin] 儲存廣告失敗：', error);
+    toast.error('❌ 儲存失敗：' + error.message);
+  } finally {
+    isSavingAd.value = false;
+  }
+};
+
+const deleteAd = async (ad) => {
+  if (!(await confirmDialog(`確定要刪除廣告「${ad.title}」嗎？此動作無法復原。`))) return;
+  try {
+    await deleteDoc(doc(db, "ads", ad.id));
+    await writeAuditLog('admin', '刪除廣告', `管理員刪除了廣告「${ad.title}」。`, { adId: ad.id });
+    toast.success('✅ 廣告已刪除！');
+    if (editingAdId.value === ad.id) resetAdForm();
+  } catch (error) { toast.error('❌ 刪除失敗：' + error.message); }
+};
+
 const formatTime = (ts) => { if (!ts) return ''; const d = ts.toDate(); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`; };
 const formatFullTime = (ts) => { if (!ts) return '同步中...'; const d = ts.toDate(); return `${d.getFullYear()}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`; };
 
 onMounted(() => {
-  fetchAllProducts(); 
-  fetchAllUsers();      
-  fetchAllBroadcasts(); 
-  fetchAuditLogs(); 
+  fetchAllProducts();
+  fetchAllUsers();
+  fetchAllBroadcasts();
+  fetchAuditLogs();
+  fetchAllAds();
   refreshClaimStatus();
 });
 
 onUnmounted(() => {
-  if (unsubscribeProducts) unsubscribeProducts(); 
+  if (unsubscribeProducts) unsubscribeProducts();
   if (unsubscribeUsers) unsubscribeUsers();
   if (unsubscribeBroadcasts) unsubscribeBroadcasts();
   if (unsubscribeAuditLogs) unsubscribeAuditLogs();
+  if (unsubscribeAdsList) unsubscribeAdsList();
 });
 </script>
 
@@ -811,4 +1073,20 @@ onUnmounted(() => {
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* ==================== 廣告管理 ==================== */
+.ad-image-slots { display: flex; gap: 10px; }
+.ad-image-slot { position: relative; flex: 1; aspect-ratio: 1; border-radius: 12px; border: 2px dashed #ddd; background: #f5f6f8; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; }
+.ad-slot-preview { width: 100%; height: 100%; object-fit: cover; }
+.ad-slot-empty { font-size: 26px; color: #bbb; font-weight: 300; }
+.ad-file-input { display: none; }
+.date-range-row { display: flex; align-items: center; gap: 8px; }
+.date-range-row .admin-input { flex: 1; }
+.date-range-sep { color: #999; font-weight: 700; }
+.ad-form-actions { display: flex; gap: 10px; margin-top: 10px; }
+.ad-form-actions .btn-submit-broadcast { margin-top: 0; }
+.btn-cancel-edit { flex: 1; background: #fff; color: #666; border: 1px solid #ddd; border-radius: 14px; font-size: 14px; font-weight: 800; cursor: pointer; }
+.meta-tag.ad-status-active { background: #e8f5e9; color: #2e7d32; }
+.meta-tag.ad-status-upcoming { background: #fff8e1; color: #f57f17; }
+.meta-tag.ad-status-expired { background: #f5f5f5; color: #999; }
 </style>
