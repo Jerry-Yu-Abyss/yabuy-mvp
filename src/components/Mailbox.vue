@@ -364,21 +364,31 @@ const rejectOrder = async (order) => {
   }
 };
 
-// 買家自行取消尚未成立的請求（pending / negotiating）。
-// 沿用 rejectOrder 同一套 'rejected' 狀態 —— statusText 已把它顯示為「已取消」，
-// 買家取消、賣家婉拒本來就是同一種結果，沒必要另開一個狀態值。
-const canCancel = (order) =>
-  activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
+// 取消交易：沿用 rejectOrder 同一套 'rejected' 狀態 —— statusText 已把它顯示為
+// 「已取消」，買家取消、賣家婉拒本來就是同一種結果，沒必要另開一個狀態值。
+//
+// 顯示條件：
+//   買家 → pending / negotiating / accepted 都可取消
+//   賣家 → 只在 accepted 顯示；pending / negotiating 時賣家已有專用的「婉拒」按鈕，
+//          再放一顆 ✕ 會是同功能的重複入口。
+// accepted 涵蓋「交易時間前的等待期」與「交易時間中的面交流程」，兩個時段都能取消。
+const canCancel = (order) => {
+  if (order.status === 'accepted') return true;
+  return activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
+};
 
-// 取消次數限制：一個月最多 3 次，記在 users/{uid}.cancelCount，
-// 跨期（30 天）自動歸零。這裡只做前端判斷與寫入，沒有安全規則強制，
-// 使用者理論上能繞過（見 docs/wiki/新交易流程規格.md 的風險 1）。
+// 取消次數限制：30 天最多 3 次，記在 users/{uid}.cancelCount。
+// 額度是「買 + 賣」共用同一份：不論這次是以買家還是賣家身分取消，都扣同一個
+// 計數器（因為計數器掛在使用者身上，不分角色），跨期自動歸零。
+// 這裡只做前端判斷與寫入，沒有安全規則強制，使用者理論上能繞過
+//（見 docs/wiki/新交易流程規格.md 的風險 1）。
 const CANCEL_LIMIT = 3;
 const CANCEL_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
 const cancelOrder = async (order) => {
   const user = auth.currentUser;
   if (!user) return;
+  const asBuyer = activeTab.value === 'buy';
 
   let remaining = CANCEL_LIMIT;
   let periodExpired = true;
@@ -393,17 +403,23 @@ const cancelOrder = async (order) => {
   }
 
   if (remaining <= 0) {
-    alert(`本月取消次數已達上限（${CANCEL_LIMIT} 次／30 天），暫時無法取消，請直接與對方協調或聯繫平台管理員。`);
+    alert(`取消次數已達上限（30 天內 ${CANCEL_LIMIT} 次，買家與賣家身分共用額度），暫時無法取消，請直接與對方協調或聯繫平台管理員。`);
     return;
   }
 
-  // 說明清楚取消後還能再發起、以及這次取消會扣掉的額度，減少猶豫也讓限制有感
-  if (!confirm(`確定要取消「${order.productName}」的交易請求嗎？\n\n取消後這筆請求會關閉，但您隨時可以回到商品頁重新發起交易。\n\n取消後本月剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次。`)) return;
+  // 說明清楚後續、以及這次取消會扣掉的額度，減少猶豫也讓限制有感
+  const afterNote = asBuyer
+    ? '取消後這筆交易會關閉，但您隨時可以回到商品頁重新發起。'
+    : '取消後這筆交易會關閉，商品仍保留在您的賣場。';
+  if (!confirm(
+    `確定要取消「${order.productName}」的交易嗎？\n\n${afterNote}\n\n` +
+    `取消後剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次（30 天內，買賣共用）。`
+  )) return;
 
   try {
     await updateDoc(doc(db, "orders", order.id), {
       status: 'rejected',
-      lastActionBy: 'buyer',
+      lastActionBy: asBuyer ? 'buyer' : 'seller',
       updatedAt: serverTimestamp()
     });
     // 跨期要歸零重算，不能用 increment（沒有基準值可加）；未跨期才用原子遞增

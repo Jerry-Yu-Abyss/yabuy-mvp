@@ -5,7 +5,7 @@
 
     <div v-if="step === 'safe-wait'" class="deal-screen safe-wait-screen">
       <div class="screen-header" :class="{ 'no-timeline': false }">
-        <button class="back-pill" @click="$emit('close')">← 返回</button>
+        <button class="back-pill" @click="handleBack">← 返回</button>
         <h2 class="screen-title">安全交易確認</h2>
         <div></div>
       </div>
@@ -35,7 +35,7 @@
 
     <div v-if="step === 'scan'" class="deal-screen scan-screen">
       <div class="screen-header">
-        <div></div>
+        <button class="back-pill" @click="handleBack">← 返回</button>
         <h2 class="screen-title">掃描交易點 QR</h2>
         <div></div>
       </div>
@@ -78,7 +78,7 @@
 
     <div v-if="step === 'price'" class="deal-screen price-screen">
       <div class="screen-header">
-        <div></div>
+        <button class="back-pill" @click="handleBack">← 返回</button>
         <h2 class="screen-title">輸入成交價格</h2>
         <div></div>
       </div>
@@ -140,7 +140,7 @@
 
     <div v-if="step === 'seller-confirm-price'" class="deal-screen seller-price-screen">
       <div class="screen-header">
-        <div></div>
+        <button class="back-pill" @click="handleBack">← 返回</button>
         <h2 class="screen-title">確認成交金額</h2>
         <div></div>
       </div>
@@ -340,6 +340,16 @@ const syncStep = () => {
 
   if (o.status === 'completed') { log('  ✅ 分支[completed] → step=done'); step.value = 'done'; return; }
 
+  // 對方在面交進行中按了取消 → 立刻收掉畫面並告知，
+  // 否則我方會停在原步驟完全沒反應，不知道交易已經沒了。
+  if (o.status === 'rejected' || o.status === 'failed') {
+    log('  🚫 分支[交易已取消] → 關閉畫面', { status: o.status, lastActionBy: o.lastActionBy });
+    stopScan();
+    alert('這筆交易已被取消。');
+    emit('close');
+    return;
+  }
+
   const bothScanned = !!o.buyerScannedAt && !!o.sellerScannedAt;
   if (bothScanned) {
     if (props.role === 'sell' && o.finalPrice) {
@@ -433,6 +443,13 @@ const startScan = async () => {
 const stopScan = () => {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
   isScanning.value = false;
+};
+
+// 返回信箱。進度都存在 Firestore，退出不會遺失，重新進來會回到同一步驟；
+// 使用者也需要能退出去信箱按「取消交易」（交易進行中仍允許取消）。
+const handleBack = () => {
+  stopScan();   // 確實釋放相機，否則鏡頭燈會一直亮著
+  emit('close');
 };
 
 const detectQR = async () => {
