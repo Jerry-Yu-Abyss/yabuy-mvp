@@ -1,8 +1,11 @@
 <template>
   <ToastHost />
 
+  <!-- 密碼重設連結（信箱裡點回來的）：優先於一切畫面顯示，不論登入狀態 -->
+  <ResetPasswordScreen v-if="resetPasswordCode" :code="resetPasswordCode" @done="clearResetPasswordParam" />
+
   <!-- 服務介紹頁 -->
-  <Landing v-if="showLanding" @login-success="dismissLanding" />
+  <Landing v-else-if="showLanding" @login-success="dismissLanding" />
 
   <!-- 【修復1】移除了 @touchmove.prevent，釋放原生的滑動事件 -->
   <div v-else class="native-app-container">
@@ -122,6 +125,7 @@ import AdminPage from './components/Admin.vue';
 import Onboarding from './components/Onboarding.vue';
 import Landing from './components/Landing.vue';
 import List from './components/List.vue';
+import ResetPasswordScreen from './components/ResetPasswordScreen.vue';
 
 // 匯入圖標
 import IconMap from '@/assets/icons/map.svg?component';
@@ -156,6 +160,27 @@ try { showLanding.value = localStorage.getItem('yabuy_landing_seen') !== '1'; } 
 const dismissLanding = () => {
   showLanding.value = false;
   try { localStorage.setItem('yabuy_landing_seen', '1'); } catch (e) { /* ignore */ }
+};
+
+// ── 密碼重設連結 ──
+// List.vue「查看登入狀態」的更改密碼會用自訂 actionCodeSettings 寄信，讓信裡的
+// 連結指回我們自己的網域（而不是 Firebase 預設的 hosted 頁面），格式是
+// ?mode=resetPassword&oobCode=xxx。這裡在最外層攔截，不論當下是否已登入都優先處理。
+const resetPasswordCode = ref(null);
+try {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('mode') === 'resetPassword' && params.get('oobCode')) {
+    resetPasswordCode.value = params.get('oobCode');
+  }
+} catch (e) { /* ignore */ }
+
+const clearResetPasswordParam = () => {
+  resetPasswordCode.value = null;
+  try {
+    const url = new URL(window.location.href);
+    ['mode', 'oobCode', 'apiKey', 'lang', 'continueUrl'].forEach((k) => url.searchParams.delete(k));
+    window.history.replaceState({}, '', url.pathname + url.search);
+  } catch (e) { /* ignore */ }
 };
 
 const pendingAsSeller = ref(0);

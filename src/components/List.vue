@@ -29,7 +29,10 @@
                 :disabled="!item.ready"
                 @click="item.ready && onItemClick(item.key)"
               >
-                <span class="item-icon">{{ item.icon }}</span>
+                <span class="item-icon">
+                  <component :is="item.icon" v-if="typeof item.icon !== 'string'" />
+                  <template v-else>{{ item.icon }}</template>
+                </span>
                 <span class="item-text">
                   <span class="item-label">{{ item.label }}</span>
                   <span v-if="item.desc" class="item-desc">{{ item.desc }}</span>
@@ -85,6 +88,45 @@
 
       <!-- ── 排行榜 ── -->
       <Ranking v-else-if="view === 'ranking'" />
+
+      <!-- ── 查看登入狀態 ── -->
+      <template v-else-if="view === 'account-status'">
+        <div class="status-card">
+          <div class="status-row">
+            <span class="status-label">登入方式</span>
+            <span class="status-value">
+              <span class="provider-badge" :class="{ google: loginProvider === 'google' }">
+                {{ loginProvider === 'google' ? 'Google 帳號' : '電子郵件' }}
+              </span>
+            </span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">登入信箱</span>
+            <span class="status-value email">{{ statusEmail || '—' }}</span>
+          </div>
+        </div>
+
+        <template v-if="loginProvider === 'email'">
+          <section class="field-group">
+            <p class="field-label">更改密碼</p>
+            <p class="status-hint">
+              點下面按鈕後，我們會寄一封驗證信到上面那個信箱。點擊信裡的連結，就能直接在畫面上設定新密碼——不用先輸入舊密碼。
+            </p>
+            <button
+              class="save-btn" type="button"
+              :disabled="pwResetSending"
+              @click="handleSendPasswordReset"
+            >
+              {{ pwResetSending ? '寄送中…' : '寄送更改密碼驗證信' }}
+            </button>
+          </section>
+        </template>
+        <template v-else>
+          <p class="status-hint center">
+            這個帳號是用 Google 登入的，密碼由 Google 帳戶管理，YaBuy 這邊沒有獨立密碼可以改。請至 Google 帳戶設定頁面變更。
+          </p>
+        </template>
+      </template>
     </div>
   </aside>
 </template>
@@ -92,12 +134,15 @@
 <script setup>
 import { ref, computed } from 'vue';
 import { auth, db, storage } from '@/firebase';
-import { updateProfile } from 'firebase/auth';
+import { updateProfile, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { toast } from './toast.js';
 import { subjectData } from './Subject.js';
 import Ranking from './Ranking.vue';
+import IconUserPen from '@/assets/icons/user-pen.svg?component';
+import IconAward from '@/assets/icons/award.svg?component';
+import IconMailShield from '@/assets/icons/mail-shield.svg?component';
 
 const emit = defineEmits(['close', 'saved']);
 
@@ -112,22 +157,23 @@ const colleges = subjectData
 // ready: false 的項目僅先佔位，點擊不動作（避免給出假的可用功能）
 const menuGroups = [
   {
-    title: '帳號',
+    title: '帳號與安全',
     items: [
-      { key: 'profile', icon: '👤', label: '更改個人資料', desc: '名字、頭像、學院', ready: true }
+      { key: 'profile', icon: IconUserPen, label: '更改個人資料', desc: '名字、頭像、學院', ready: true },
+      { key: 'account-status', icon: IconMailShield, label: '查看登入狀態', desc: '登入方式、帳號、更改密碼', ready: true }
     ]
   },
   {
     title: '校園動態',
     items: [
-      { key: 'ranking', icon: '🏆', label: '排行榜', desc: '院所交易、交易王、循環累計', ready: true }
+      { key: 'ranking', icon: IconAward, label: '排行榜', desc: '院所交易、交易王、循環累計', ready: true }
     ]
   }
 ];
 
-const view = ref('menu');   // 'menu' | 'profile' | 'ranking'
+const view = ref('menu');   // 'menu' | 'profile' | 'ranking' | 'account-status'
 
-const VIEW_TITLES = { profile: '更改個人資料', ranking: '排行榜' };
+const VIEW_TITLES = { profile: '更改個人資料', ranking: '排行榜', 'account-status': '登入狀態' };
 const viewTitle = computed(() => VIEW_TITLES[view.value] || '功能選單');
 
 const nameInput = ref('');
@@ -148,6 +194,15 @@ const onItemClick = async (key) => {
       return;
     }
     view.value = 'ranking';
+    return;
+  }
+
+  if (key === 'account-status') {
+    if (!fbUser) {
+      toast('🔒 請先登入才能查看登入狀態。');
+      return;
+    }
+    view.value = 'account-status';
     return;
   }
 
@@ -174,6 +229,54 @@ const onItemClick = async (key) => {
 };
 
 const canSave = computed(() => nameInput.value.trim().length > 0);
+
+// ── 查看登入狀態 ──
+// providerData 含 google.com 就算 Google 登入；同時綁定多種方式時，跟 verify.js
+// 的 isGoogleUser 同一套判斷（Google 優先），維持全站一致。
+const loginProvider = computed(() => {
+  const providers = auth.currentUser?.providerData || [];
+  return providers.some((p) => p.providerId === 'google.com') ? 'google' : 'email';
+});
+const statusEmail = computed(() => auth.currentUser?.email || '');
+
+const pwResetSending = ref(false);
+
+// 60 秒節流，理由跟 verify.js 的 sendVerificationThrottled 完全一樣：
+// Firebase 每寄一封新的重設密碼信，就會讓前一封的連結失效，連續點會讓使用者
+// 點到已過期的舊連結。
+const PW_RESET_COOLDOWN_MS = 60_000;
+const pwResetKey = (uid) => `yabuy:pwResetMailAt:${uid}`;
+
+const handleSendPasswordReset = async () => {
+  const fbUser = auth.currentUser;
+  if (!fbUser?.email || pwResetSending.value) return;
+
+  let lastSentAt = 0;
+  try { lastSentAt = Number(localStorage.getItem(pwResetKey(fbUser.uid))) || 0; } catch (e) { /* 無痕模式等，視同沒寄過 */ }
+  const waitMs = PW_RESET_COOLDOWN_MS - (Date.now() - lastSentAt);
+  if (waitMs > 0) {
+    toast(`驗證信剛剛才寄出，請先收信。${Math.ceil(waitMs / 1000)} 秒後可再寄一次。`);
+    return;
+  }
+
+  pwResetSending.value = true;
+  try {
+    // 帶自訂 actionCodeSettings：讓信裡的連結指回我們自己的網域（帶 mode=resetPassword
+    // &oobCode=...），App.vue 會攔截並顯示 ResetPasswordScreen，使用者才能「在畫面中
+    // 直接修改」，而不是被導去 Firebase 預設的 hosted 頁面。
+    await sendPasswordResetEmail(auth, fbUser.email, {
+      url: window.location.origin,
+      handleCodeInApp: true
+    });
+    try { localStorage.setItem(pwResetKey(fbUser.uid), String(Date.now())); } catch (e) { /* 忽略 */ }
+    toast('✅ 驗證信已寄出，請至信箱點擊連結完成更改密碼。');
+  } catch (error) {
+    console.error('[List] 寄送更改密碼驗證信失敗:', error);
+    toast('❌ 寄送失敗，請稍後再試。');
+  } finally {
+    pwResetSending.value = false;
+  }
+};
 
 // 選取圖片 → 讀檔 → 置中裁切成正方形 → 壓縮（沿用 Cam.vue 上架圖片的處理方式）
 const onFileChange = (e) => {
@@ -379,7 +482,8 @@ const handleSave = async () => {
 .menu-item:active:not(:disabled) { background: #f4f7f2; }
 .menu-item:disabled { cursor: default; opacity: 0.55; }
 
-.item-icon { font-size: 20px; flex-shrink: 0; }
+.item-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #2f4a3a; font-size: 20px; }
+.item-icon svg { width: 20px; height: 20px; }
 
 .item-text {
   flex: 1;
@@ -516,4 +620,43 @@ const handleSave = async () => {
 }
 .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .save-btn:not(:disabled):active { transform: scale(0.98); }
+
+/* ── 查看登入狀態 ── */
+.status-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 4px 16px;
+  box-shadow: 0 2px 10px rgba(47, 74, 58, 0.06);
+  margin-bottom: 20px;
+}
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+}
+.status-row + .status-row { border-top: 1px solid #eef1ec; }
+.status-label { font-size: 13px; font-weight: 700; color: #8a958d; flex-shrink: 0; }
+.status-value { font-size: 14px; font-weight: 700; color: #2f4a3a; min-width: 0; text-align: right; }
+.status-value.email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.provider-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #eef1ec;
+  color: #3d5f4a;
+}
+.provider-badge.google { background: #fdecc8; color: #8a5a00; }
+
+.status-hint {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: #8a958d;
+  line-height: 1.7;
+}
+.status-hint.center { text-align: center; margin-top: 8px; }
 </style>
