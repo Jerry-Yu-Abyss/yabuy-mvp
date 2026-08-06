@@ -1,10 +1,29 @@
 <!DOCTYPE html>
-<html lang="">
+<html lang="zh-Hant">
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
+
+    <!-- PWA manifest（Android / 桌面瀏覽器安裝用） -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#acc6b1">
+
+    <!-- iOS「加入主畫面」：Safari 只認 apple-touch-icon，不吃 manifest 的 icons，
+         一定要單獨這樣宣告；圖檔本身是滿版無透明、無自帶圓角的正方形，
+         讓 iOS 自己套用圓角遮罩，才不會變成「方形裡包一個更小圓角卡片」的雙重邊框。 -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/icons/icon-120.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152.png">
+    <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-167.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png">
+
+    <!-- 加入主畫面後以「全螢幕獨立 App」模式開啟，狀態列樣式跟主題色一致 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="YaBuy">
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Vite</title>
+    <title>YaBuy 大學二手交易</title>
   </head>
   <body>
     <div id="app"></div>
