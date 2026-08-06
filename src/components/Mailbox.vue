@@ -95,6 +95,7 @@
                   type="button"
                   class="card-cancel-btn"
                   title="取消請求"
+                  :disabled="isOrderBusy(order.id)"
                   @click.stop="cancelOrder(order)"
                 >✕</button>
               </div>
@@ -131,16 +132,16 @@
             <div class="card-actions">
               <template v-if="activeTab === 'sell'">
                 <div v-if="order.status === 'pending'" class="btn-group">
-                  <button class="btn-secondary" @click="rejectOrder(order)">婉拒</button>
-                  <button class="btn-outline" @click="startNegotiate(order)">更改提案</button>
-                  <button class="btn-primary" @click="acceptOrder(order)">接受</button>
+                  <button class="btn-secondary" :disabled="isOrderBusy(order.id)" @click="rejectOrder(order)">婉拒</button>
+                  <button class="btn-outline" :disabled="isOrderBusy(order.id)" @click="startNegotiate(order)">更改提案</button>
+                  <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受</button>
                 </div>
 
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'buyer'" class="btn-group-column">
                   <div class="info-bubble buyer-offer">買家提出了新提案，請確認</div>
                   <div class="btn-group">
-                    <button class="btn-secondary" @click="rejectOrder(order)">婉拒</button>
-                    <button class="btn-primary" @click="acceptOrder(order)">接受方案</button>
+                    <button class="btn-secondary" :disabled="isOrderBusy(order.id)" @click="rejectOrder(order)">婉拒</button>
+                    <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受方案</button>
                   </div>
                 </div>
 
@@ -153,8 +154,8 @@
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'seller'" class="btn-group-column">
                   <div class="info-bubble seller-offer">賣家提議了新時間地點</div>
                   <div class="btn-group">
-                    <button class="btn-outline" @click="startNegotiate(order)">再改一次</button>
-                    <button class="btn-primary" @click="acceptOrder(order)">接受方案</button>
+                    <button class="btn-outline" :disabled="isOrderBusy(order.id)" @click="startNegotiate(order)">再改一次</button>
+                    <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受方案</button>
                   </div>
                 </div>
 
@@ -257,6 +258,26 @@ const latestMsg   = computed(() => systemMessages.value[0] || {});
 const restMsgs    = computed(() => systemMessages.value.slice(1));
 const hasMoreMsgs = computed(() => restMsgs.value.length > 0);
 
+// 🌟 防連點：網路慢的時候使用者會連按好幾下，同一筆訂單被重複送出。
+// 影響最大的是取消——cancelCount 用 increment(1) 累加，連按兩下會一次扣掉兩次額度。
+// 記在獨立的 Set 而不是掛在 order 物件上，因為 toOrder() 每次 onSnapshot 都會重建
+// 物件，掛在上面的旗標會在寫入完成前就被洗掉。
+const busyOrderIds = ref(new Set());
+const isOrderBusy = (id) => busyOrderIds.value.has(id);
+
+// 同一筆訂單同時間只跑一個寫入動作；重複點擊在寫入完成前會被直接忽略
+const runOrderAction = async (orderId, action) => {
+  if (busyOrderIds.value.has(orderId)) return;
+  busyOrderIds.value = new Set(busyOrderIds.value).add(orderId);
+  try {
+    await action();
+  } finally {
+    const next = new Set(busyOrderIds.value);
+    next.delete(orderId);
+    busyOrderIds.value = next;
+  }
+};
+
 let unsubscribeBuy = null;
 let unsubscribeSell = null;
 let unsubscribeSystem = null; // 🌟 新增：廣播的監聽器
@@ -349,20 +370,20 @@ const submitNegotiate = async (order) => {
   }
 };
 
-const acceptOrder = async (order) => {
+const acceptOrder = (order) => runOrderAction(order.id, async () => {
   console.log('%c[Mailbox]', 'color:#1976d2;font-weight:bold;', '👉 接受訂單 →', { orderId: order.id, 目前status: order.status });
   try {
     await updateDoc(doc(db, "orders", order.id), { status: 'accepted', updatedAt: serverTimestamp() });
     console.log('%c[Mailbox]', 'color:#1976d2;font-weight:bold;', '✅ 訂單已設為 accepted');
     alert("✅ 預約成立！");
   } catch (e) { console.warn('[Mailbox] 🔥 接受訂單失敗：', e.code, e.message); alert("操作失敗"); }
-};
+});
 
-const rejectOrder = async (order) => {
+const rejectOrder = (order) => runOrderAction(order.id, async () => {
   if (confirm("確定取消預約？")) {
     await updateDoc(doc(db, "orders", order.id), { status: 'rejected', updatedAt: serverTimestamp() });
   }
-};
+});
 
 // 取消交易：沿用 rejectOrder 同一套 'rejected' 狀態 —— statusText 已把它顯示為
 // 「已取消」，買家取消、賣家婉拒本來就是同一種結果，沒必要另開一個狀態值。
@@ -385,7 +406,7 @@ const canCancel = (order) => {
 const CANCEL_LIMIT = 3;
 const CANCEL_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
-const cancelOrder = async (order) => {
+const cancelOrder = (order) => runOrderAction(order.id, async () => {
   const user = auth.currentUser;
   if (!user) return;
   const asBuyer = activeTab.value === 'buy';
@@ -435,7 +456,7 @@ const cancelOrder = async (order) => {
     console.error('[Mailbox] 取消請求失敗：', e.code, e.message);
     alert("取消失敗，請重試。");
   }
-};
+});
 
 const statusText = (s) => ({ pending: '等待中', negotiating: '協商中', accepted: '預約成立', rejected: '已取消', failed: '交易失敗', completed: '✅ 已完成' }[s] || s);
 const formatTime = (ts) => { if (!ts) return ''; const d = ts.toDate(); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`; };
@@ -619,6 +640,10 @@ onUnmounted(() => {
 .btn-primary { flex: 2; height: 44px; background: #333; color: #fff; border-radius: 14px; border: none; font-weight: 800; }
 .btn-outline { flex: 1; height: 44px; background: #fff; border: 1.5px solid #333; color: #333; border-radius: 14px; font-weight: 800; }
 .btn-secondary { flex: 1; height: 44px; background: #f5f5f5; color: #999; border-radius: 14px; border: none; font-weight: 800; }
+/* 送出中：讓被擋掉的重複點擊有視覺回饋，不然按鈕看起來跟可按時一模一樣 */
+.btn-primary:disabled, .btn-outline:disabled, .btn-secondary:disabled, .card-cancel-btn:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
 
 .negotiate-panel { margin-top: 10px; padding: 16px; background: #fff; border: 1.5px solid #eee; border-radius: 24px; display: flex; flex-direction: column; gap: 12px; }
 .panel-header { font-size: 12px; font-weight: 850; color: #aaa; text-transform: uppercase; }

@@ -29,7 +29,9 @@
       </div>
 
       <div class="arrive-action" v-if="!myReady">
-        <button class="btn-ready active" @click="setReady">🔒 按下安全交易</button>
+        <button class="btn-ready active" :disabled="actionBusy" @click="setReady">
+          {{ actionBusy ? '送出中...' : '🔒 按下安全交易' }}
+        </button>
       </div>
     </div>
 
@@ -57,7 +59,7 @@
             <p class="manual-hint">或手動輸入交易點代碼</p>
             <div class="manual-row">
               <input v-model="manualCode" class="manual-input" placeholder="輸入交易點代碼" />
-              <button class="btn-manual-confirm" @click="confirmManual">確認</button>
+              <button class="btn-manual-confirm" :disabled="actionBusy" @click="confirmManual">確認</button>
             </div>
           </div>
         </div>
@@ -152,8 +154,10 @@
       </div>
 
       <div class="confirm-actions">
-        <button class="btn-deal reject" @click="sellerConfirmPrice(false)">拒絕</button>
-        <button class="btn-deal accept" @click="sellerConfirmPrice(true)">確認成交 ✅</button>
+        <button class="btn-deal reject" :disabled="actionBusy" @click="sellerConfirmPrice(false)">拒絕</button>
+        <button class="btn-deal accept" :disabled="actionBusy" @click="sellerConfirmPrice(true)">
+          {{ actionBusy ? '處理中...' : '確認成交 ✅' }}
+        </button>
       </div>
     </div>
 
@@ -222,6 +226,20 @@ const isScanning      = ref(false);
 const manualCode      = ref('');
 const finalPrice      = ref(null);
 const submittingPrice = ref(false);
+
+// 🌟 防連點：網路慢時使用者會連按好幾下，同一個動作被重複送出。
+// 出價與評價本來就各自有 submittingPrice / ratingSubmitting，這支是給
+// 「安全交易確認、掃碼記錄、賣家確認成交」這幾個原本沒防護的寫入用。
+const actionBusy = ref(false);
+const runOnce = async (fn) => {
+  if (actionBusy.value) return;
+  actionBusy.value = true;
+  try {
+    await fn();
+  } finally {
+    actionBusy.value = false;
+  }
+};
 
 // 交易評價
 const ratingStars = ref(0);
@@ -372,7 +390,7 @@ const syncStep = () => {
   step.value = 'safe-wait';
 };
 
-const setReady = async () => {
+const setReady = () => runOnce(async () => {
   const field = props.role === 'buy' ? 'buyerReady' : 'sellerReady';
   log(`👉 點擊「按下安全交易」→ 準備寫入 ${field}=true`);
   try {
@@ -382,9 +400,9 @@ const setReady = async () => {
     warn(`🔥 寫入 ${field} 失敗（多半是 Firestore 規則或網路）：`, e.code, e.message);
     alert('安全交易確認送出失敗，請檢查網路後重試。');
   }
-};
+});
 
-const recordScan = async () => {
+const recordScan = () => runOnce(async () => {
   const field = props.role === 'buy' ? 'buyerScannedAt' : 'sellerScannedAt';
   log(`👉 掃描成功 → 準備寫入 ${field}=serverTimestamp()，地點代碼=${expectedCode.value}`);
   try {
@@ -398,7 +416,7 @@ const recordScan = async () => {
     warn(`🔥 寫入 ${field} 失敗：`, e.code, e.message);
     alert('掃描確認送出失敗，請重試。');
   }
-};
+});
 
 const confirmManual = () => {
   const code = manualCode.value.trim().toUpperCase();
@@ -510,7 +528,7 @@ const submitPrice = async () => {
   }
 };
 
-const sellerConfirmPrice = async (agree) => {
+const sellerConfirmPrice = (agree) => runOnce(async () => {
   log(`👉 賣家對成交價 ${liveOrder.value.finalPrice} 的決定：${agree ? '確認成交' : '拒絕'}`);
   if (agree) {
     await updateDoc(doc(db, "orders", props.order.id), {
@@ -545,7 +563,7 @@ const sellerConfirmPrice = async (agree) => {
       updatedAt: serverTimestamp()
     });
   }
-};
+});
 </script>
 
 <style scoped>
@@ -684,6 +702,10 @@ const sellerConfirmPrice = async (agree) => {
 .btn-deal.accept { background: #1a1a1a; color: #fff; }
 .btn-deal.reject { background: #f5f5f5; color: #999; }
 .btn-deal:active { transform: scale(0.97); }
+/* 送出中：被擋掉的重複點擊要看得出來，不然按鈕跟可按時長得一模一樣 */
+.btn-deal:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-deal:disabled:active { transform: none; }
+.btn-manual-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── 買家輸入價格 ── */
 .price-hero {

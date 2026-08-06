@@ -212,7 +212,11 @@ const handleGoogleLogin = async () => {
   loginError.value = '';
   loggingIn.value = true;
   try {
-    await signInWithPopup(auth, googleProvider);
+    const result = await signInWithPopup(auth, googleProvider);
+    // 🐛 修復：這裡原本漏了 upsertUserDoc，Landing 是新使用者的主要入口，
+    // 導致第一次用 Google 登入的帳號完全沒有寫入 users/{uid} 文件
+    // （email/password 那條路徑本來就有呼叫，只有 Google 這條漏掉）。
+    await upsertUserDoc(result.user);
     emit('login-success');           // 交給 App.vue 收掉 Landing、進入主畫面
   } catch (e) {
     if (e.code !== 'auth/popup-closed-by-user') {

@@ -245,6 +245,20 @@ const compressImage = (img, callback) => {
 };
 
 const firebaseUpload = async () => {
+  // 🌟 防連點：旗標一定要在「第一個 await 之前」就設起來。
+  // 原本 isUploading 是等驗證通過後才設 true，但 requireVerified() 內含
+  // reload() 網路請求，網路慢時那段空窗按鈕仍然是可按的 —— 連點會通過多次驗證、
+  // 上傳多張圖到 Storage，並建立多筆重複商品。
+  if (isUploading.value) return;
+  isUploading.value = true;
+  try {
+    await uploadProduct();
+  } finally {
+    isUploading.value = false;
+  }
+};
+
+const uploadProduct = async () => {
   if (!requireLogin()) return;
   if (!(await requireVerified())) return;
   const user = auth.currentUser;
@@ -252,8 +266,6 @@ const firebaseUpload = async () => {
   if (!form.name.trim()) { alert('請填寫商品名稱'); return; }
   if (!form.price || form.price <= 0) { alert('請填寫有效的價格（需大於 0）'); return; }
   if (!compressedBlob.value) { alert('請先上傳商品圖片'); return; }
-
-  isUploading.value = true;
 
   try {
     const fileName = `products/${Date.now()}-${user.uid}.jpg`;
@@ -281,9 +293,8 @@ const firebaseUpload = async () => {
   } catch (error) {
     console.error("[Cam] 上傳失敗:", error);
     alert("發布失敗，請檢查網路或 Firebase 權限設定。");
-  } finally {
-    isUploading.value = false;
   }
+  // isUploading 的解鎖統一交給外層 firebaseUpload 的 finally
 };
 
 const resetForm = () => {

@@ -50,12 +50,12 @@
       </div>
 
       <footer class="sheet-footer">
-        <button 
-          class="confirm-action-btn" 
-          :disabled="!tradeInfo.time || !tradeInfo.location || !isTimeValid"
+        <button
+          class="confirm-action-btn"
+          :disabled="isSending || showSuccess || !tradeInfo.time || !tradeInfo.location || !isTimeValid"
           @click="handleSend"
         >
-          {{ isTimeValid ? '發送預約請求' : '時間不符合規範' }}
+          {{ isSending ? '傳送中...' : (isTimeValid ? '發送預約請求' : '時間不符合規範') }}
         </button>
       </footer>
     </div>
@@ -85,6 +85,7 @@ const props = defineProps(['product']);
 const emit = defineEmits(['close', 'submit']);
 
 const showSuccess = ref(false);
+const isSending = ref(false);   // 送出中：擋住重複點擊，同時讓按鈕顯示「傳送中...」
 
 const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院', '鳥籠', '感恩學院宿舍'];
 
@@ -101,6 +102,19 @@ const isTimeValid = computed(() => {
 });
 
 const handleSend = async () => {
+  // 🌟 防連點：網路慢的時候使用者常常會連按好幾下「發送」，
+  // 這支函式一次會寫 audit_logs + orders 兩筆文件，重複觸發會產生重複訂單。
+  // isSending 擋「請求還在飛」的期間，showSuccess 擋「已送出成功、正在播動畫」的期間。
+  if (isSending.value || showSuccess.value) return;
+  isSending.value = true;
+  try {
+    await sendTradeRequest();
+  } finally {
+    isSending.value = false;
+  }
+};
+
+const sendTradeRequest = async () => {
   const user = auth.currentUser;
   const p = props.product;
 
