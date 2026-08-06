@@ -21,9 +21,6 @@
         <div class="profile-main">
           <div class="avatar-container">
             <img :src="user.photoURL || DEFAULT_AVATAR" class="avatar-img" />
-            <button class="edit-badge" type="button" title="更換大頭貼" aria-label="更換大頭貼">
-              <span class="edit-icon">📷</span>
-            </button>
           </div>
           <div class="profile-info">
             <h2 class="nickname">{{ user.displayName || '校園用戶' }}</h2>
@@ -767,9 +764,6 @@ const removeFavorite = async (fav) => {
 .profile-main { display: flex; align-items: center; gap: 16px; }
 .avatar-container { position: relative; flex-shrink: 0; }
 .avatar-img { width: 72px; height: 72px; border-radius: 24px; object-fit: cover; border: 4px solid #fff; box-shadow: 0 10px 20px rgba(0,0,0,0.08); display: block; }
-.edit-badge { position: absolute; bottom: -6px; right: -6px; width: 30px; height: 30px; border-radius: 50%; background: #333; border: 3px solid #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 4px 10px rgba(0,0,0,0.2); transition: 0.2s; }
-.edit-badge:active { transform: scale(0.9); }
-.edit-icon { font-size: 14px; line-height: 1; }
 
 .profile-info { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .nickname { font-size: 22px; font-weight: 850; color: #2c3e50; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
