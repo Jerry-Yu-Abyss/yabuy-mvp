@@ -64,8 +64,22 @@ export const syncVerifyStatus = async (fbUser, status) => {
 // ── 交易 / 上架前的即時守門 ──
 // reload() 拉最新 emailVerified；剛點完驗證信的使用者不會被誤擋。
 // reload 成功才回寫 Firestore —— 失敗時的狀態不可信，不拿來寫資料庫。
+//
+// 🌟 效能修正：reload() 是打 Firebase Auth 伺服器的真實網路請求，網路差的時候
+// 可能要好幾秒。emailVerified 只會從 false 變 true，不會反過來（已驗證的帳號
+// 不可能又變回未驗證），所以 reload() 唯一有意義的場景是「使用者剛在別的分頁
+// 點完驗證信連結，這裡的本機快取還是 false，要去問伺服器最新狀態」。
+// 已經是 true 的話，重新問一次伺服器只是白白浪費一次網路往返——這支函式被
+// 每次發起交易／上架前的即時守門呼叫（TradeModal/Cam.vue 的 blockUnverifiedForTrade），
+// 使用者已驗證後，每按一次「發送」都要多等一次這個不必要的網路請求，
+// 就是回報「按鈕變遲緩」的根本原因。
 export const ensureVerified = async (fbUser, { sync = true } = {}) => {
   if (!fbUser) return { ok: false, status: VERIFY_NOT_YET };
+
+  if (fbUser.emailVerified) {
+    return { ok: isVerified(resolveVerifyStatus(fbUser)), status: resolveVerifyStatus(fbUser) };
+  }
+
   let reloaded = false;
   try {
     await fbUser.reload();
