@@ -25,13 +25,26 @@
       
       <!-- 1. 商品巡邏 -->
       <template v-if="currentTab === 'patrol'">
+        <!-- 🌟 上架中／已售出統計，一眼看出全站商品狀態，不用自己數列表 -->
+        <div v-if="!loadingProducts && allProducts.length > 0" class="patrol-stats-row">
+          <div class="patrol-stat-box">
+            <span class="patrol-stat-num">{{ activeProductCount }}</span>
+            <span class="patrol-stat-label">✅ 上架中</span>
+          </div>
+          <div class="patrol-stat-box">
+            <span class="patrol-stat-num">{{ soldProductCount }}</span>
+            <span class="patrol-stat-label">💰 已售出</span>
+          </div>
+        </div>
+
         <div v-if="loadingProducts" class="state-hint">
           <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
           <p>載入全站商品資料中...</p>
         </div>
 
         <div v-else-if="allProducts.length > 0" class="admin-product-list">
-          <div v-for="item in allProducts" :key="item.id" class="admin-item-card">
+          <!-- 🌟 已售出的商品排到最後面，優先讓管理員看到還在上架、比較需要巡邏的商品 -->
+          <div v-for="item in sortedPatrolProducts" :key="item.id" class="admin-item-card">
             <div class="item-img-box">
               <img v-if="item.url" :src="item.url" class="item-img" />
               <div v-else class="item-placeholder">📦</div>
@@ -42,6 +55,10 @@
               <div class="item-meta">
                 <span class="meta-tag price">${{ item.price }}</span>
                 <span class="meta-tag category">{{ item.category || '未分類' }}</span>
+                <!-- 🌟 巡邏列表原本不分上架中/已售出，肉眼看不出來，補一個徽章 -->
+                <span class="status-badge" :class="item.status === 'sold' ? 'sold' : 'active'">
+                  {{ item.status === 'sold' ? '💰 已售出' : '✅ 上架中' }}
+                </span>
               </div>
               <div class="seller-info">
                 <span>賣家 UID: </span>
@@ -504,6 +521,18 @@ const fetchAllProducts = () => {
   });
 };
 
+// 🌟 上架中／已售出統計
+const activeProductCount = computed(() => allProducts.value.filter(p => p.status !== 'sold').length);
+const soldProductCount = computed(() => allProducts.value.filter(p => p.status === 'sold').length);
+
+// 🌟 已售出排到最後面；查詢本身已經是 createdAt desc，這裡只做穩定的分組搬移，
+// 不重新排序群組內部順序，所以「上架中」跟「已售出」各自仍維持新到舊。
+const sortedPatrolProducts = computed(() => {
+  const active = allProducts.value.filter(p => p.status !== 'sold');
+  const sold = allProducts.value.filter(p => p.status === 'sold');
+  return [...active, ...sold];
+});
+
 const showDeleteModal = ref(false);
 const productToDelete = ref(null);
 const deleteReason = ref('');
@@ -921,6 +950,12 @@ onUnmounted(() => {
 /* 指標分頁：Indicate 自帶 padding，外層不重複加 */
 .admin-content-area :deep(.indicate-page) { padding-top: 4px; background: transparent; }
 
+/* ==================== 商品巡邏：上架中／已售出統計 ==================== */
+.patrol-stats-row { display: flex; gap: 12px; margin-bottom: 16px; }
+.patrol-stat-box { flex: 1; background: #fff; border-radius: 16px; padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 4px; box-shadow: 0 4px 14px rgba(0,0,0,0.04); }
+.patrol-stat-num { font-size: 26px; font-weight: 900; color: #2c3e50; }
+.patrol-stat-label { font-size: 12px; font-weight: 800; color: #888; }
+
 /* ==================== 共通卡片與按鈕樣式 ==================== */
 .admin-item-card { background: #fff; border-radius: 18px; padding: 14px; margin-bottom: 12px; display: flex; gap: 14px; align-items: center; box-shadow: 0 4px 14px rgba(0,0,0,0.04); border-left: 4px solid #333; }
 .item-img-box { width: 68px; height: 68px; border-radius: 12px; overflow: hidden; background: #eee; flex-shrink: 0; }
@@ -928,7 +963,9 @@ onUnmounted(() => {
 .item-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px; }
 .item-details { flex: 1; min-width: 0; }
 .item-name { font-size: 14px; font-weight: 800; color: #333; margin: 0 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-meta { display: flex; gap: 6px; margin-bottom: 6px; }
+.item-meta { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+/* .status-badge 原本設計是獨立一行（用戶列表），這裡跟 .meta-tag 同一橫排，蓋掉它的 margin-top 避免對不齊 */
+.item-meta .status-badge { margin-top: 0; }
 .meta-tag { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 800; }
 .meta-tag.price { background: #e8f5e9; color: #2e7d32; }
 .meta-tag.category { background: #f5f5f5; color: #666; }
@@ -945,6 +982,7 @@ onUnmounted(() => {
 .status-badge { display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; }
 .status-badge.active { background: #e8f5e9; color: #2e7d32; }
 .status-badge.banned { background: #ffebee; color: #d32f2f; }
+.status-badge.sold { background: #fff3e0; color: #ef6c00; }
 .item-actions-col { display: flex; flex-direction: column; gap: 8px; }
 .btn-outline-small { background: #fff; color: #333; border: 1px solid #ccc; padding: 10px 14px; border-radius: 10px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
 
