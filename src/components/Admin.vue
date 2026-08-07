@@ -92,6 +92,17 @@
           </button>
         </div>
 
+        <!-- 🌟 補齊缺失用戶資料：只有創辦人看得到（此操作會大量寫入 users） -->
+        <div v-if="isFounder" class="admin-claim-box backfill-box">
+          <div class="claim-text">
+            <strong>🩹 補齊缺失用戶資料</strong>
+            <span>{{ backfillStatus }}</span>
+          </div>
+          <button class="btn-claim" :disabled="backfillLoading" @click="runBackfill">
+            {{ backfillLoading ? '處理中...' : '檢查並補齊' }}
+          </button>
+        </div>
+
         <div v-if="loadingUsers" class="state-hint">
           <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
           <p>載入使用者名單中...</p>
@@ -651,6 +662,58 @@ const confirmMyAdmin = async () => {
   }
 };
 
+// 🩹 補齊缺失的 users 文件（Auth 有、Firestore 沒有的孤兒帳號）
+// 先試跑列出缺哪些人，使用者確認後才真的寫入，避免誤觸就大量寫資料庫。
+const backfillLoading = ref(false);
+const backfillStatus = ref('尚未檢查');
+
+const runBackfill = async () => {
+  backfillLoading.value = true;
+  try {
+    const fn = httpsCallable(functions, 'backfillUserDocs');
+
+    // 第一階段：試跑（dryRun 預設 true），只統計不寫入
+    const preview = await fn({ dryRun: true });
+    const { authTotal, existingTotal, missingTotal, missing } = preview.data || {};
+
+    if (!missingTotal) {
+      backfillStatus.value = `✅ 已一致：Auth ${authTotal} 人，Firestore ${existingTotal} 筆`;
+      toast.success('✅ 兩邊數量已經一致，沒有需要補齊的資料。');
+      return;
+    }
+
+    const names = (missing || []).map(m => m.email || m.uid).join('\n');
+    const ok = await confirmDialog(
+      `Auth 共 ${authTotal} 人，其中 ${missingTotal} 人缺少 Firestore 資料：\n\n` +
+      `${names}\n\n確定要補建這 ${missingTotal} 筆資料嗎？`
+    );
+    if (!ok) {
+      backfillStatus.value = `⚠️ 有 ${missingTotal} 筆缺失（已取消補齊）`;
+      return;
+    }
+
+    // 第二階段：真的寫入
+    const res = await fn({ dryRun: false });
+    const done = res.data?.missingTotal ?? 0;
+    backfillStatus.value = `✅ 已補齊 ${done} 筆，Auth 共 ${res.data?.authTotal} 人`;
+    await writeAuditLog('admin', '補齊缺失用戶資料',
+      `創辦人補建了 ${done} 筆缺少 Firestore 文件的帳號資料。`);
+    toast.success(`✅ 已補齊 ${done} 筆使用者資料！`);
+  } catch (e) {
+    console.error('[Admin] 補齊用戶資料失敗：', e.code, e.message);
+    backfillStatus.value = '❌ 執行失敗';
+    if (e.code === 'functions/permission-denied') {
+      toast.error('❌ 只有創辦人可以執行資料補齊');
+    } else if (e.code === 'functions/not-found') {
+      toast.error('❌ 找不到 backfillUserDocs，請先部署 Cloud Functions');
+    } else {
+      toast.error('❌ 執行失敗：' + (e.message || '請稍後再試'));
+    }
+  } finally {
+    backfillLoading.value = false;
+  }
+};
+
 // 設為 / 取消其他用戶的管理員（創辦人或現有管理員可用）
 const toggleAdmin = async (u) => {
   if (!isFounder.value) { toast.error('❌ 只有創辦人可以新增或取消管理員'); return; }
@@ -1096,6 +1159,7 @@ onUnmounted(() => {
 .claim-text span { font-size: 12px; color: #888; }
 .btn-claim { flex-shrink: 0; background: #333; color: #fff; border: none; border-radius: 12px; padding: 10px 16px; font-size: 13px; font-weight: 800; cursor: pointer; }
 .btn-claim:disabled { background: #ccc; }
+.backfill-box { border-color: #ffe0b2; background: #fffdf8; }
 .admin-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #fff; background: #5a9461; padding: 2px 8px; border-radius: 8px; vertical-align: middle; }
 .founder-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #7a5b00; background: linear-gradient(135deg, #ffe082, #ffca28); padding: 2px 8px; border-radius: 8px; vertical-align: middle; box-shadow: 0 1px 3px rgba(214,167,0,0.4); }
 .btn-admin-toggle { background: #eef1f6; color: #3a4a63; border: none; border-radius: 8px; padding: 7px 10px; font-size: 12px; font-weight: 800; cursor: pointer; transition: 0.15s; }

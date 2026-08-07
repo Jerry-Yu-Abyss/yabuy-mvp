@@ -68,3 +68,97 @@ export const addAdminRole = onCall(async (request) => {
     admin: makeAdmin,
   };
 });
+
+// ── 補齊缺失的 users 文件 ──
+// 背景：Landing.vue 的 Google 登入曾漏呼叫 upsertUserDoc（2026-07-09 Landing
+// 上線起到修復為止），期間用 Google 註冊的帳號只存在於 Firebase Auth，
+// Firestore 的 users collection 沒有對應文件。前端修好後，這些人只要再登入
+// 一次就會自動補建檔，但「從此不再回來」的使用者會永久缺資料，導致 Auth 與
+// Firestore 兩邊數量對不上。這支函式把那些孤兒帳號一次補齊。
+//
+// 只補「不存在」的文件，已存在的一律不動，所以重複執行是安全的。
+
+// 與前端 verify.js 的 resolveVerifyStatus 同一套判定，避免兩邊標準不一致：
+// emailVerified 為 false 一律 not_yet（不因綁過 Google 就跳過）
+const resolveVerifyStatus = (user: admin.auth.UserRecord): string => {
+  if (!user.emailVerified) return "not_yet";
+  const isGoogle = user.providerData
+    .some((p) => p.providerId === "google.com");
+  return isGoogle ? "google" : "email";
+};
+
+export const backfillUserDocs = onCall(async (request) => {
+  const caller = request.auth;
+  if (!caller) {
+    throw new HttpsError("unauthenticated", "請先登入再操作。");
+  }
+  // 這支會大量寫入 users collection，限創辦人本人執行
+  const callerEmail = (caller.token.email as string) || "";
+  if (callerEmail !== FOUNDER_EMAIL) {
+    throw new HttpsError("permission-denied", "只有創辦人可以執行資料補齊。");
+  }
+
+  const data = (request.data || {}) as { dryRun?: boolean };
+  // 預設為試跑：先看看會補哪些人，確認無誤再帶 dryRun:false 真的寫入
+  const dryRun = data.dryRun !== false;
+
+  const db = admin.firestore();
+  const created: { uid: string; email: string }[] = [];
+  let authTotal = 0;
+  let existingTotal = 0;
+
+  // listUsers 一次最多 1000 筆，用 pageToken 逐頁掃完
+  let pageToken: string | undefined = undefined;
+  do {
+    const page = await admin.auth().listUsers(1000, pageToken);
+    authTotal += page.users.length;
+
+    for (const user of page.users) {
+      const ref = db.collection("users").doc(user.uid);
+      const snap = await ref.get();
+      if (snap.exists) {
+        existingTotal++;
+        continue;
+      }
+
+      created.push({uid: user.uid, email: user.email || ""});
+      if (dryRun) continue;
+
+      // createdAt/lastLogin 用 Auth 記錄的真實時間，不要用「現在」，
+      // 否則補建的帳號看起來像今天才註冊，統計與排序都會失真
+      const creationTime = user.metadata.creationTime;
+      const lastSignInTime = user.metadata.lastSignInTime;
+
+      await ref.set({
+        id: user.uid,
+        displayName: user.displayName ||
+          user.email?.split("@")[0] || "校園用戶",
+        email: user.email || "",
+        photoURL: user.photoURL || "",
+        status: "active",
+        verify: resolveVerifyStatus(user),
+        createdAt: creationTime ?
+          admin.firestore.Timestamp.fromDate(new Date(creationTime)) :
+          admin.firestore.FieldValue.serverTimestamp(),
+        lastLogin: lastSignInTime ?
+          admin.firestore.Timestamp.fromDate(new Date(lastSignInTime)) :
+          admin.firestore.FieldValue.serverTimestamp(),
+        backfilled: true, // 標記為補建，方便日後追查來源
+      });
+    }
+
+    pageToken = page.pageToken;
+  } while (pageToken);
+
+  return {
+    dryRun,
+    authTotal,
+    existingTotal,
+    missingTotal: created.length,
+    missing: created,
+    message: dryRun ?
+      `試跑：Auth 共 ${authTotal} 人，其中 ${created.length} 人缺少 ` +
+        "Firestore 資料（本次未寫入）。" :
+      `已補齊 ${created.length} 筆使用者資料，Auth 共 ${authTotal} 人。`,
+  };
+});
