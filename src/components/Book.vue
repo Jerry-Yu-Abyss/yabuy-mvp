@@ -71,7 +71,6 @@
           <div class="book-info">
             <div class="book-price">${{ book.price }}</div>
             <div class="book-title">{{ book.name }}</div>
-            <div class="seller-label">👤 {{ isOwnProduct(book.sellerId) ? '我 (賣家)' : (book.sellerName || '校園賣家') }}</div>
           </div>
         </div>
       </div>
@@ -312,8 +311,6 @@ onUnmounted(() => unsubscribe?.());
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; height: 2.8em; line-height: 1.4;
 }
-.seller-label { font-size: 10px; color: #aaa; margin-top: 8px; font-weight: 800; }
-
 .new-dot {
   position: absolute; top: 10px; right: 10px;
   background: #cf847d; color: #fff;
