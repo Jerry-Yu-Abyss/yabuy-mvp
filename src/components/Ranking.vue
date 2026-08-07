@@ -130,8 +130,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { db } from '@/firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { functions } from '@/firebase';
+import { httpsCallable } from 'firebase/functions';
 import { subjectData } from './Subject.js';
 
 // 學院清單與 List.vue 個人資料表單同源，確保兩邊選項一致
@@ -185,109 +185,35 @@ const REG_SCALE_MAX = 500;
 const regBarHeight = (v) => (!v ? '2px' : `${Math.min(100, Math.max(4, (v / REG_SCALE_MAX) * 100))}%`);
 const rankClass = (i) => (i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '');
 
-const toMillis = (ts) => {
-  if (!ts) return null;
-  if (typeof ts.toMillis === 'function') return ts.toMillis();
-  if (ts.seconds != null) return ts.seconds * 1000;
-  const d = new Date(ts);
-  return isNaN(d.getTime()) ? null : d.getTime();
-};
+// 🌟 聚合統計改走 Cloud Function（getRankingStats），不再由前端直接
+// getDocs(collection(db,'orders')) 撈全站原始訂單——firestore.rules 已把
+// orders 收緊成只有買家/賣家/管理員能讀，且就算開放，讓每個使用者的瀏覽器
+// 下載全站原始訂單（含 buyerId/sellerId/finalPrice）再自己算平均，也等於
+// 把不該公開的交易明細送到用戶端。函式只回傳算好的聚合數字。
+const getRankingStats = httpsCallable(functions, 'getRankingStats');
 
 const loadRanking = async () => {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const [oSnap, uSnap, pSnap] = await Promise.all([
-      getDocs(collection(db, 'orders')),
-      getDocs(collection(db, 'users')),
-      getDocs(collection(db, 'products'))
-    ]);
-    const orders = oSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const products = pSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const { data } = await getRankingStats();
 
-    // 站台總覽：即時現況，跟下面「本月／歷史交易」統計不同維度，分開算
-    overview.value = {
-      activeProducts: products.filter((p) => p.status === 'active').length,
-      totalUsers: users.length
-    };
+    overview.value = data.overview;
+    usersNoCollege.value = data.usersNoCollege;
+    unattributed.value = data.unattributed;
+    cumulative.value = data.cumulative;
 
-    const userCollege = {};
-    const userName = {};
-    users.forEach((u) => {
-      userCollege[u.id] = u.college || '';
-      userName[u.id] = u.displayName || '匿名同學';
-    });
-
-    // ── 各學院註冊人數（即時現況，不看時間區間）──
-    const collegeUserCount = {};
-    colleges.forEach((c) => { collegeUserCount[c] = 0; });
-    let noCollegeUsers = 0;
-    users.forEach((u) => {
-      if (u.college && collegeUserCount[u.college] != null) collegeUserCount[u.college]++;
-      else noCollegeUsers++;
-    });
-    usersNoCollege.value = noCollegeUsers;
+    // 學院清單／縮寫／排序仍由前端負責（跟 Subject.js 同一個來源），
+    // 函式只回傳「學院名 → 數字」的聚合表，這裡把它套進原本的畫面資料結構。
     collegeUserRank.value = colleges
-      .map((c) => ({ college: c, short: SHORT_NAME[c] || c, count: collegeUserCount[c] }))
+      .map((c) => ({ college: c, short: SHORT_NAME[c] || c, count: data.collegeUserCount[c] || 0 }))
       .sort((a, b) => b.count - a.count);
 
-    const completed = orders.filter((o) => o.status === 'completed');
-
-    // 成交時間用 updatedAt（狀態改為 completed 那次寫入），舊資料缺漏時退回 createdAt
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
-    const thisMonth = completed.filter((o) => {
-      const t = toMillis(o.updatedAt) ?? toMillis(o.createdAt);
-      return t != null && t >= monthStart && t < monthEnd;
-    });
-
-    // ── ① 院所排行 ──
-    // 一筆成交同時計入買方與賣方所屬學院（雙方都參與了這次循環）。
-    // 雙方都沒設學院的訂單無法歸類，另外計數並在畫面上據實說明。
-    const collegeCount = {};
-    colleges.forEach((c) => { collegeCount[c] = 0; });
-    let noCollege = 0;
-    thisMonth.forEach((o) => {
-      const bc = userCollege[o.buyerId];
-      const sc = userCollege[o.sellerId];
-      if (bc && collegeCount[bc] != null) collegeCount[bc]++;
-      if (sc && collegeCount[sc] != null) collegeCount[sc]++;
-      if (!bc && !sc) noCollege++;
-    });
-    unattributed.value = noCollege;
     collegeRank.value = colleges
-      .map((c) => ({ college: c, short: SHORT_NAME[c] || c, count: collegeCount[c] }))
+      .map((c) => ({ college: c, short: SHORT_NAME[c] || c, count: data.collegeOrderCount[c] || 0 }))
       .sort((a, b) => b.count - a.count);
 
-    // ── ② 本月買賣數量前 10 ──
-    const tally = {};
-    const bump = (uid) => {
-      if (!uid) return;
-      tally[uid] = (tally[uid] || 0) + 1;
-    };
-    thisMonth.forEach((o) => { bump(o.buyerId); bump(o.sellerId); });
-    topUsers.value = Object.entries(tally)
-      .map(([uid, total]) => ({ uid, total, name: userName[uid] || '已離開的用戶' }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 10);
-
-    // ── ③ 循環利用累計（不限本月）──
-    const amount = completed.reduce(
-      (sum, o) => sum + (Number(o.finalPrice) || Number(o.productPrice) || 0),
-      0
-    );
-    const participants = new Set();
-    completed.forEach((o) => {
-      if (o.buyerId) participants.add(o.buyerId);
-      if (o.sellerId) participants.add(o.sellerId);
-    });
-    cumulative.value = {
-      items: completed.length,
-      amount,
-      participants: participants.size,
-      avg: completed.length ? Math.round(amount / completed.length) : 0
-    };
+    topUsers.value = data.topUsers;
   } catch (e) {
     console.error('[Ranking] 排行榜統計失敗：', e);
     errorMsg.value = '讀取資料失敗，請確認網路連線後再試。';

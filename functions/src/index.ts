@@ -162,3 +162,137 @@ export const backfillUserDocs = onCall(async (request) => {
       `已補齊 ${created.length} 筆使用者資料，Auth 共 ${authTotal} 人。`,
   };
 });
+
+// ── 排行榜統計（跨用戶聚合，改走後端）──
+// 背景：firestore.rules 把 orders 收緊成只有買家/賣家/管理員能讀，原本
+// Ranking.vue 直接在前端 getDocs(collection(db,'orders')) 撈全站訂單、
+// 在瀏覽器裡即時運算聚合值——這代表任何登入者都能在 devtools 看到全站
+// 「已完成」訂單的原始欄位（buyerId/sellerId/finalPrice）。排行榜只需要
+// 聚合後的數字，不需要原始訂單資料，因此改成這支 Cloud Function 用
+// Admin SDK 在伺服器端算好聚合值才回傳，front end 拿不到任何一筆原始訂單。
+//
+// 學院清單需與 src/components/Subject.js 的 subjectData 保持同步（那邊才是
+// 真正的來源，這裡只是聚合用，兩邊分開維護，改動學院清單記得兩邊都要改）。
+const RANKING_COLLEGES = [
+  "醫學暨健康學院",
+  "資訊電機學院",
+  "管理暨社會科學學院",
+  "創意設計學院",
+  "護理學院",
+];
+
+const toMillis = (ts: admin.firestore.Timestamp | undefined): number | null => {
+  if (!ts) return null;
+  return ts.toMillis();
+};
+
+export const getRankingStats = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "請先登入再操作。");
+  }
+
+  const db = admin.firestore();
+  const [ordersSnap, usersSnap, productsSnap] = await Promise.all([
+    db.collection("orders").get(),
+    db.collection("users").get(),
+    db.collection("products").get(),
+  ]);
+
+  const orders = ordersSnap.docs.map((d) => d.data());
+  const users: Array<{id: string} & admin.firestore.DocumentData> =
+    usersSnap.docs.map((d) => ({id: d.id, ...d.data()}));
+  const products = productsSnap.docs.map((d) => d.data());
+
+  const overview = {
+    activeProducts: products.filter((p) => p.status === "active").length,
+    totalUsers: users.length,
+  };
+
+  const userCollege: Record<string, string> = {};
+  const userName: Record<string, string> = {};
+  users.forEach((u) => {
+    userCollege[u.id] = (u.college as string) || "";
+    userName[u.id] = (u.displayName as string) || "匿名同學";
+  });
+
+  // ── 各學院註冊人數（即時現況）──
+  const collegeUserCount: Record<string, number> = {};
+  RANKING_COLLEGES.forEach((c) => {
+    collegeUserCount[c] = 0;
+  });
+  let usersNoCollege = 0;
+  users.forEach((u) => {
+    const college = u.college as string | undefined;
+    if (college && collegeUserCount[college] != null) {
+      collegeUserCount[college]++;
+    } else {
+      usersNoCollege++;
+    }
+  });
+
+  const completed = orders.filter((o) => o.status === "completed");
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    .getTime();
+  const thisMonth = completed.filter((o) => {
+    const t = toMillis(o.updatedAt) ?? toMillis(o.createdAt);
+    return t != null && t >= monthStart && t < monthEnd;
+  });
+
+  // ── 院所交易排行（雙方都算一次；雙方皆無學院則計入 unattributed）──
+  const collegeOrderCount: Record<string, number> = {};
+  RANKING_COLLEGES.forEach((c) => {
+    collegeOrderCount[c] = 0;
+  });
+  let unattributed = 0;
+  thisMonth.forEach((o) => {
+    const bc = userCollege[o.buyerId as string];
+    const sc = userCollege[o.sellerId as string];
+    if (bc && collegeOrderCount[bc] != null) collegeOrderCount[bc]++;
+    if (sc && collegeOrderCount[sc] != null) collegeOrderCount[sc]++;
+    if (!bc && !sc) unattributed++;
+  });
+
+  // ── 本月買賣數量前 10 ──
+  const tally: Record<string, number> = {};
+  const bump = (uid?: string) => {
+    if (!uid) return;
+    tally[uid] = (tally[uid] || 0) + 1;
+  };
+  thisMonth.forEach((o) => {
+    bump(o.buyerId as string);
+    bump(o.sellerId as string);
+  });
+  const topUsers = Object.entries(tally)
+    .map(([uid, total]) => ({uid, total, name: userName[uid] || "已離開的用戶"}))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+
+  // ── 循環利用累計（不限本月）──
+  const amount = completed.reduce(
+    (sum, o) => sum + (Number(o.finalPrice) || Number(o.productPrice) || 0),
+    0
+  );
+  const participants = new Set<string>();
+  completed.forEach((o) => {
+    if (o.buyerId) participants.add(o.buyerId as string);
+    if (o.sellerId) participants.add(o.sellerId as string);
+  });
+
+  return {
+    overview,
+    collegeUserCount,
+    usersNoCollege,
+    collegeOrderCount,
+    unattributed,
+    topUsers,
+    cumulative: {
+      items: completed.length,
+      amount,
+      participants: participants.size,
+      avg: completed.length ? Math.round(amount / completed.length) : 0,
+    },
+  };
+});

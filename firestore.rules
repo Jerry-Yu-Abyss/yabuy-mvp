@@ -7,12 +7,26 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.admin == true;
     }
 
+    // 共用函式：是否為某筆訂單的當事人（買家或賣家）。
+    // messages 文件本身沒存 buyerId/sellerId，要回頭查 orders 才知道誰有資格看。
+    function isOrderParty(orderId) {
+      let o = get(/databases/$(database)/documents/orders/$(orderId)).data;
+      return request.auth.uid == o.buyerId || request.auth.uid == o.sellerId;
+    }
+
+    // 稽核紀錄：一般使用者發起交易時會寫入一筆（TradeModal.vue），管理員的操作
+    // 也會寫入（Admin.vue）；但內容含交易糾紛細節、操作對象等敏感資訊，只有
+    // 管理員能讀。維持唯讀性質：任何人都不能事後竄改或刪除已寫入的紀錄。
     match /audit_logs/{logId} {
-      allow read, write: if request.auth != null;
+      allow read: if isAdmin();
+      allow create: if request.auth != null;
+      allow update, delete: if false;
     }
 
     match /users/{uid} {
-      allow read: if true;
+      // email 等個資只給登入者看（原本 if true 讓沒登入的人也能撈到全站 email
+      // 清單），一般瀏覽（首頁商品等）本來就不靠讀這個 collection，不受影響。
+      allow read: if request.auth != null;
       allow create: if request.auth != null && request.auth.uid == uid;
 
       // 更新規則：三種情況之一才允許
@@ -41,18 +55,39 @@ service cloud.firestore {
 
     match /products/{productId} {
       allow read: if true;
-      // 擁有者可改自己的商品；管理員可管理任何商品（巡邏/清除用）
-      allow create: if request.auth != null;
+      // 擁有者可改自己的商品；管理員可管理任何商品（巡邏/清除用）。
+      // create 額外驗證 sellerId 一定是建立者本人，避免有人冒名替別人上架商品。
+      allow create: if request.auth != null
+        && request.resource.data.sellerId == request.auth.uid;
       allow update, delete: if request.auth != null
         && (resource.data.sellerId == request.auth.uid || isAdmin());
     }
 
     match /orders/{orderId} {
-      allow read, write: if request.auth != null;
+      // 只有這筆訂單的買家、賣家、或管理員能看到／動到——原本任何登入者都能
+      // 讀寫任何一筆訂單，等於別人的面交時間地點、價格全部攤在陽光下。
+      allow read: if request.auth != null &&
+        (request.auth.uid == resource.data.buyerId ||
+         request.auth.uid == resource.data.sellerId ||
+         isAdmin());
+      // 建立時一定是買家本人發起（TradeModal.vue 一律把 buyerId 設成 auth.uid）
+      allow create: if request.auth != null &&
+        request.resource.data.buyerId == request.auth.uid;
+      allow update: if request.auth != null &&
+        (request.auth.uid == resource.data.buyerId ||
+         request.auth.uid == resource.data.sellerId ||
+         isAdmin());
+      // 目前沒有任何地方會刪除訂單，不開放
+      allow delete: if false;
     }
 
     match /favorites/{favId} {
-      allow read, write: if request.auth != null;
+      // 只有本人能看到／動到自己的收藏——原本任何登入者都能讀寫任何人的收藏清單
+      allow read, delete: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.userId;
+      allow update: if false; // 沒有地方會更新收藏，只有新增/刪除
     }
 
     match /notifications/{notifId} {
@@ -68,10 +103,15 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 罐頭訊息（新交易流程的面交前即時協調）。跟 orders/favorites 同一套
-    // 寬鬆風格：任何登入者可讀寫，不逐欄位驗證寄件人／訂單歸屬。
+    // 罐頭訊息（新交易流程的面交前即時協調）。訊息本身沒存買賣雙方 uid，
+    // 靠 isOrderParty() 回頭查 orders 判斷讀寫資格——只有這筆訂單的買家/賣家
+    // 能看到、能發言，原本任何登入者都能讀寫任何一筆訊息。
     match /messages/{messageId} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null && isOrderParty(resource.data.orderId);
+      allow create: if request.auth != null
+        && request.resource.data.senderId == request.auth.uid
+        && isOrderParty(request.resource.data.orderId);
+      allow update, delete: if false;
     }
 
     // 廣告投放：首頁未登入也看得到（跟 products 一樣公開可讀），
