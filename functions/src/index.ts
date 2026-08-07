@@ -296,3 +296,21 @@ export const getRankingStats = onCall(async (request) => {
     },
   };
 });
+
+// ── 尚未登入也看得到的公開統計（Landing.vue 用）──
+// 安全設計：故意不用 request.auth 判斷、也不接受呼叫者傳入任何參數——
+// 這支函式無論誰呼叫，能拿到的東西永遠固定是「兩個整數」，不可能被拿來
+// 挖出任何一筆使用者或訂單的原始資料。用 Firestore 的 count() 聚合查詢，
+// 伺服器端甚至不會把任何一份文件內容載進函式的記憶體，只回傳筆數。
+export const getPublicStats = onCall(async () => {
+  const db = admin.firestore();
+  const [usersCount, completedOrdersCount] = await Promise.all([
+    db.collection("users").count().get(),
+    db.collection("orders").where("status", "==", "completed").count().get(),
+  ]);
+
+  return {
+    totalUsers: usersCount.data().count,
+    circulatedItems: completedOrdersCount.data().count,
+  };
+});

@@ -45,22 +45,42 @@
         <p v-if="loginError" class="login-error">{{ loginError }}</p>
       </div>
 
-      <!-- 簽名元素：漂浮玻璃商品卡（視差微動） -->
-      <div class="hero-cards" aria-hidden="true">
-        <div class="p-card glass depth-1" :style="layer(18)">
-          <div class="p-thumb t-book">📗</div>
-          <div class="p-info"><strong>微積分（三版）</strong><span>$250 · 資工系</span></div>
-          <div class="p-tag">教科書</div>
+      <!-- 右欄：漂浮商品卡（示意用的簽名元素）＋ 底下壓一條真實統計 -->
+      <div class="hero-side">
+        <!-- 簽名元素：漂浮玻璃商品卡（視差微動） -->
+        <div class="hero-cards" aria-hidden="true">
+          <div class="p-card glass depth-1" :style="layer(18)">
+            <div class="p-thumb t-book">📗</div>
+            <div class="p-info"><strong>微積分（三版）</strong><span>$250 · 資工系</span></div>
+            <div class="p-tag">教科書</div>
+          </div>
+          <div class="p-card glass depth-2" :style="layer(34)">
+            <div class="p-thumb t-lamp">💡</div>
+            <div class="p-info"><strong>宿舍檯燈</strong><span>$120 · 近全新</span></div>
+            <div class="p-tag sold">已循環</div>
+          </div>
+          <div class="p-card glass depth-3" :style="layer(52)">
+            <div class="p-thumb t-bike">🚲</div>
+            <div class="p-info"><strong>通勤腳踏車</strong><span>$900 · 面交</span></div>
+            <div class="p-tag">生活</div>
+          </div>
         </div>
-        <div class="p-card glass depth-2" :style="layer(34)">
-          <div class="p-thumb t-lamp">💡</div>
-          <div class="p-info"><strong>宿舍檯燈</strong><span>$120 · 近全新</span></div>
-          <div class="p-tag sold">已循環</div>
-        </div>
-        <div class="p-card glass depth-3" :style="layer(52)">
-          <div class="p-thumb t-bike">🚲</div>
-          <div class="p-info"><strong>通勤腳踏車</strong><span>$900 · 面交</span></div>
-          <div class="p-tag">生活</div>
+
+        <!-- 🌟 尚未登入也看得到的信任指標（資料來自 getPublicStats，後端算好才回傳）。
+             刻意做成「一整條」而不是兩張卡：上面已經有三張漂浮卡片，再加兩張同級的卡
+             會變成五個散落物件很雜亂。合併成單一面板、不加浮動動畫，反而成為壓住整組
+             漂浮卡的視覺基座——上面輕盈飄動、下面沉穩寫實，層次分明。
+             拿不到資料就整條不顯示，不留永遠是 0 的空狀態。 -->
+        <div v-if="publicStats" class="stat-strip glass">
+          <div class="stat-item">
+            <strong>{{ publicStats.totalUsers }}</strong>
+            <span>位同學已加入</span>
+          </div>
+          <div class="stat-divider" aria-hidden="true"></div>
+          <div class="stat-item">
+            <strong>{{ publicStats.circulatedItems }}</strong>
+            <span>件商品已循環</span>
+          </div>
         </div>
       </div>
     </section>
@@ -200,10 +220,29 @@ import {
   fetchSignInMethodsForEmail
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, googleProvider, db } from '@/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { auth, googleProvider, db, functions } from '@/firebase';
 import { resolveVerifyStatus, isVerified, sendVerificationThrottled } from './verify.js';
 
 const emit = defineEmits(['login-success']);
+
+// 🌟 尚未登入也看得到的信任指標（同學數／已循環商品數）。
+// 這裡「不能」直接 getDocs(collection(db,'users'/'orders'))——firestore.rules
+// 已把這兩個 collection 收緊成需要登入/是當事人才能讀（見 驗證與權限.md），
+// 未登入的訪客本來就讀不到，讀了也只會拿到單一兩個整數以外、不該讓瀏覽器
+// 看到的原始資料。改呼叫 getPublicStats：伺服器端用 count() 聚合查詢算好
+// 才回傳，任何人呼叫都只會拿到這兩個數字，沒有第三種資料可以被挖出來。
+const publicStats = ref(null);
+onMounted(async () => {
+  try {
+    const fn = httpsCallable(functions, 'getPublicStats');
+    const { data } = await fn();
+    publicStats.value = data;
+  } catch (e) {
+    console.error('[Landing] 讀取公開統計失敗（不影響登入功能）：', e.code, e.message);
+    // 拿不到就整段不顯示，不留一個卡在載入中或永遠是 0 的空狀態
+  }
+});
 
 /* ── Google 登入 ── */
 const loggingIn = ref(false);
@@ -484,8 +523,26 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 .cta-sub:hover { opacity: 1; }
 .login-error { margin-top: 14px; font-size: 13px; font-weight: 700; color: #b3423a; }
 
+/* 統計條：壓在漂浮卡下方的基座，刻意不浮動、不加圖示，維持一整條的乾淨感 */
+.stat-strip {
+  display: flex; align-items: center;
+  border-radius: 18px; padding: 16px 20px;
+}
+.stat-item { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: center; }
+.stat-item strong {
+  font-family: 'LXGW WenKai TC', serif;
+  font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--ink);
+}
+.stat-item span { font-size: 12px; opacity: .65; }
+.stat-divider { width: 1px; align-self: stretch; background: rgba(47,74,58,.14); margin: 0 8px; }
+
 /* 漂浮商品卡（簽名元素） */
-.hero-cards { position: relative; height: 380px; }
+/* min-width:0 不可省略：手機版 .hero-cards 會變成橫向捲動的卡片流，
+   其 max-content 寬度是三張卡相加（≈825px）。flex/grid 子項目預設
+   min-width:auto 會撐開到那個寬度，導致這欄（連同下面的統計條）整個
+   超出畫面被切掉。設 0 才能讓它縮回欄寬、由 .hero-cards 自己內部捲動。 */
+.hero-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.hero-cards { position: relative; height: 380px; min-width: 0; }
 .p-card {
   position: absolute; display: flex; align-items: center; gap: 12px;
   border-radius: 18px; padding: 14px 16px; width: 240px;
@@ -648,6 +705,12 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
     scroll-snap-align: start;
     animation: none;              /* 手機不做浮動，改為靜態卡片 */
   }
+
+  /* 統計條：手機一樣是一整條橫跨，只縮小字級 */
+  .hero-side { gap: 12px; }
+  .stat-strip { padding: 14px 16px; }
+  .stat-item strong { font-size: 22px; }
+  .stat-item span { font-size: 11px; }
 
   /* 區塊：內距收斂 */
   .section { padding: 52px 18px; }
