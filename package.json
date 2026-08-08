@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "npm run check:bugs && npm run check:func",
+    "check:bugs": "node scripts/check-known-bugs.mjs",
+    "check:func": "node scripts/check-functional.mjs"
   },
   "dependencies": {
     "firebase": "^12.10.0",

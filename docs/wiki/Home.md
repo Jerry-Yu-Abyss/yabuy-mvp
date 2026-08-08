@@ -18,6 +18,8 @@ tags: [index]
 - [[驗證與權限]] —— Email 驗證判定、管理員 Custom Claims
 - [[部署與環境]] —— 開發、建置、部署指令與設定檔
 - [[自訂網域與寄信設定]] —— `yabuy-tw.com` 綁定 Hosting／Resend SMTP，含踩過的 Cloudflare Proxy 坑
+- [[回歸測試-已知事故]] —— **改完程式碼先跑這份**：防止已修好的 bug 復發（`npm run check:bugs`）
+- [[回歸測試-功能標準]] —— 系統該有的功能是否正常，40 項逐條驗收 Check List（`npm run check:func`）
 - [[已知問題]] —— 目前挖出但尚未處理的技術債
 
 ## 一句話定位
