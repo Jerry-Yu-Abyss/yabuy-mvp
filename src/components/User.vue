@@ -74,7 +74,14 @@
                 <span class="amount">{{ item.price }}</span>
               </div>
 
-              <div class="card-mgmt-bar" v-if="currentTab === 'sold'">
+              <!-- 已售出：不給編輯/下架，改顯示成交明細（已成定局，不該再被改動） -->
+              <div class="sold-detail-box" v-if="currentTab === 'sold' && item.status === 'sold'">
+                <div class="sold-detail-row"><span>實際售價</span><strong>${{ soldDetail(item).price }}</strong></div>
+                <div class="sold-detail-row"><span>售出地點</span><strong>{{ soldDetail(item).location }}</strong></div>
+                <div class="sold-detail-row"><span>售出時間</span><strong>{{ soldDetail(item).time }}</strong></div>
+              </div>
+
+              <div class="card-mgmt-bar" v-else-if="currentTab === 'sold'">
                 <button class="mgmt-bar-btn edit-btn" @click.stop="openEdit(item)">
                   <span>編輯項目</span>
                 </button>
@@ -345,14 +352,19 @@ import {
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
 
-const isAdmin = ref(false); 
-const currentTab = ref('sold'); 
-const mySoldItems = ref([]);   
-const myBoughtItems = ref([]); 
+const isAdmin = ref(false);
+const currentTab = ref('sold');
+const mySoldItems = ref([]);
+const myBoughtItems = ref([]);
 const myFavorites = ref([]);
+// 🌟 已售出商品的成交明細（實際售價／地點／時間），key 是 productId。
+// 這些欄位不存在 products 文件上（Deal.vue 成交時只寫 status+soldAt），
+// 真正的成交紀錄在 orders（finalPrice/location/updatedAt），要另外查表對應。
+const mySoldOrderInfo = ref({});
 let unsubscribeSold = null;
 let unsubscribeBought = null;
 let unsubscribeFav = null;
+let unsubscribeSoldOrders = null;
 
 // 交易彈窗（沿用 Heart.vue 的 TradeModal 流程）
 const selectedProduct = ref(null);
@@ -588,6 +600,20 @@ const fetchMyRecords = () => {
       .sort((a, b) => (a.status === 'sold' ? 1 : 0) - (b.status === 'sold' ? 1 : 0));
   }, (err) => { console.error("[User] 讀取賣場失敗（檢查索引/規則）：", err); });
 
+  // 🌟 已售出商品的成交明細：查自己身為賣家、已完成的訂單，
+  // 用 productId 建索引表，畫面上直接用 item.id 對應查出實際售價/地點/時間。
+  // sellerId+createdAt 這組索引本來就有（見 firestore.indexes.json），
+  // status 用前端過濾，不用另外部署新索引。
+  const qSoldOrders = query(collection(db, "orders"), where("sellerId", "==", props.user.uid), orderBy("createdAt", "desc"));
+  unsubscribeSoldOrders = onSnapshot(qSoldOrders, (s) => {
+    const map = {};
+    s.docs.forEach(d => {
+      const o = d.data();
+      if (o.status === 'completed' && o.productId) map[o.productId] = o;
+    });
+    mySoldOrderInfo.value = map;
+  }, (err) => { console.error("[User] 讀取成交明細失敗（檢查索引/規則）：", err); });
+
   const qBought = query(collection(db, "orders"), where("buyerId", "==", props.user.uid), orderBy("createdAt", "desc"));
   unsubscribeBought = onSnapshot(qBought, (s) => {
     myBoughtItems.value = s.docs
@@ -629,6 +655,7 @@ watch(() => props.user, (newVal) => {
     verifiedNow.value = null;
     isAdmin.value = false;
     mySoldItems.value = [];
+    mySoldOrderInfo.value = {};
     myBoughtItems.value = [];
     myFavorites.value = [];
     selectedProduct.value = null;
@@ -661,6 +688,22 @@ const handleUpdate = async () => {
 
 const deleteProduct = async (id, name) => { if (await confirmDialog(`確定下架 ${name}？`)) await deleteDoc(doc(db, "products", id)); };
 
+// 已售出商品的成交明細：金額/地點優先取當初的成交訂單，查不到（例如舊資料、
+// 訂單被刪）就退回商品原始價格與「未知」，不讓畫面整塊消失。
+const soldDetail = (item) => {
+  const o = mySoldOrderInfo.value[item.id];
+  return {
+    price: o?.finalPrice ?? item.price,
+    location: o?.location || '未知',
+    time: formatSoldTime(o?.updatedAt)
+  };
+};
+const formatSoldTime = (ts) => {
+  if (!ts?.toDate) return '未知';
+  const d = ts.toDate();
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+};
+
 const showBookPicker = ref(false);
 const tempCollege = ref('');
 const tempDept = ref('');
@@ -679,7 +722,7 @@ const openBookPicker = () => {
 };
 const toggleBookMode = () => { editForm.value.isBook = !editForm.value.isBook; editForm.value.category = editForm.value.isBook ? '教科書' : ''; if (editForm.value.isBook && !editForm.value.dept) showBookPicker.value = true; };
 
-onUnmounted(() => { unsubscribeSold?.(); unsubscribeBought?.(); unsubscribeFav?.(); });
+onUnmounted(() => { unsubscribeSold?.(); unsubscribeSoldOrders?.(); unsubscribeBought?.(); unsubscribeFav?.(); });
 
 const displayItems = computed(() => {
   if (currentTab.value === 'fav')  return myFavorites.value;
@@ -806,6 +849,12 @@ const removeFavorite = async (fav) => {
 .mgmt-bar-btn { flex: 1; height: 34px; border-radius: 10px; border: none; font-size: 11px; font-weight: 800; cursor: pointer; transition: 0.2s; }
 .edit-btn { background: #f1f0ee; color: #666; }
 .delete-btn { background: #fff1f0; color: #e74c3c; }
+
+/* 已售出：成交明細，取代編輯/下架按鈕（已成定局，不該再被改動） */
+.sold-detail-box { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #eef0eb; }
+.sold-detail-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.sold-detail-row span { color: #999; font-weight: 700; }
+.sold-detail-row strong { color: #333; font-weight: 800; }
 
 /* 喜愛卡片：發起交易 / 移除收藏 */
 .trade-btn { flex: 1.6; background: #2f4a3a; color: #fff; }
