@@ -36,6 +36,22 @@
               <span class="value">{{ user.uid.substring(0, 8) }}</span>
             </div>
           </div>
+
+          <!-- 🌟 貢獻度徽章：跟 Contribution.vue 主視覺同一套語彙（色塊拼接＋液態玻璃），
+               縮成圓形徽章塞進 profile-main 右側的空位，等級來源共用 contribution.js，
+               不會跟「個人貢獻度」頁面顯示不同的等級。 -->
+          <div class="contrib-badge" :title="`個人貢獻度 Lv.${contribLevel}`">
+            <div class="badge-mosaic" aria-hidden="true">
+              <span
+                v-for="n in 5" :key="n"
+                class="badge-tile" :class="[`t${n}`, { reached: n <= contribLevel }]"
+              ></span>
+            </div>
+            <div class="badge-glass">
+              <span class="badge-lv-mark">Lv</span>
+              <span class="badge-lv-num">{{ contribLevel }}</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -355,8 +371,9 @@ import {
   fetchSignInMethodsForEmail
 } from 'firebase/auth';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, updateDoc, getDoc, getDocs, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { subjectData } from './Subject.js'; 
+import { subjectData } from './Subject.js';
 import { productCategories } from './Categories.js';
+import { levelForTotal } from './contribution.js';
 import TradeModal from './TradeModal.vue';
 import { registerModalOpen, registerModalClose } from './modalState.js';
 import {
@@ -750,6 +767,13 @@ const displayItems = computed(() => {
 const activeListingCount = computed(() => mySoldItems.value.filter(p => p.status !== 'sold').length);
 const soldListingCount = computed(() => mySoldItems.value.filter(p => p.status === 'sold').length);
 
+// 貢獻度徽章：mySoldOrderInfo 的 key 數 = 自己身為賣家、已完成的訂單數
+// （跟 Contribution.vue 的 soldCount 定義完全一致，都是查 orders 而非 products），
+// 加上 myBoughtItems（已經是完成訂單）就是等級系統要的 total，共用 contribution.js 判定。
+const contribLevel = computed(() =>
+  levelForTotal(Object.keys(mySoldOrderInfo.value).length + myBoughtItems.value.length)
+);
+
 // 三格滑桿：喜愛(0) / 已買商品(1) / 我的賣場(2)
 const TAB_ORDER = ['fav', 'bought', 'sold'];
 const indicatorStyle = computed(() => ({
@@ -838,6 +862,36 @@ const removeFavorite = async (fav) => {
 .rating-text { font-size: 12px; font-weight: 700; color: #888; }
 .uid-tag .label { font-size: 10px; font-weight: 800; color: #fff; background: #7a8a6f; padding: 2px 7px; border-radius: 7px; letter-spacing: 0.5px; }
 .uid-tag .value { font-size: 12px; font-weight: 700; color: #555; letter-spacing: 0.5px; }
+
+/* 貢獻度徽章：profile-main 右側空位。色塊拼接（圓形裁切的 5 色條，
+   對應 Contribution.vue 同一套等級色階）+ 液態玻璃圓片疊在正中央顯示等級。
+   顏色直接用系統主色的實際值（--green #acc6b1 / --ink #2f4a3a），
+   User.vue 沒有定義 CSS 變數，這裡就近寫死同一組值，跟其他頁維持一致。 */
+.contrib-badge {
+  position: relative; width: 56px; height: 56px; flex-shrink: 0;
+  align-self: center; margin-left: auto;
+  border-radius: 50%;
+  box-shadow: 0 6px 16px rgba(47, 74, 58, 0.2), 0 0 0 3px #fff;
+}
+.badge-mosaic { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; display: flex; }
+.badge-tile { flex: 1; opacity: 0.25; transition: opacity 0.4s ease; }
+.badge-tile.t1 { background: #d8ecd9; }
+.badge-tile.t2 { background: #acc6b1; }
+.badge-tile.t3 { background: #8fb397; }
+.badge-tile.t4 { background: #5d8468; }
+.badge-tile.t5 { background: #2f4a3a; }
+.badge-tile.reached { opacity: 1; }
+.badge-glass {
+  position: absolute; inset: 7px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  line-height: 1;
+}
+.badge-lv-mark { font-size: 8px; font-weight: 800; color: #2f4a3a; opacity: 0.65; letter-spacing: 0.5px; }
+.badge-lv-num { font-size: 18px; font-weight: 900; color: #2f4a3a; line-height: 1; margin-top: 1px; }
 
 /* 快速統計：上架中／已售出／已購買，沿用 .uid-tag 同一套淡底圓角 pill 語彙，
    刻意做窄（小字級、小內距），不做成獨立卡片，維持整頁輕量 */

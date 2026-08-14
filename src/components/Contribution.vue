@@ -115,24 +115,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { db, auth } from '@/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
-
-/**
- * 等級門檻（買賣總和 → 等級）。
- * 需求給的是 {1:1, 5:2, 10:3, 30:4, 50:5}：key 是達到該等級所需的交易總數，
- * value 是等級。以「大於等於門檻」判定，未滿 1 件則為尚未開始的 Lv.0。
- */
-const TIERS = [
-  { level: 1, min: 1,  title: '循環新芽', sub: '你完成了第一次交易，讓一件物品有了新的主人。' },
-  { level: 2, min: 5,  title: '循環常客', sub: '交易已成習慣，你正在把二手變成日常選項。' },
-  { level: 3, min: 10, title: '循環推手', sub: '十件物品因你而延續，影響力開始擴散。' },
-  { level: 4, min: 30, title: '循環達人', sub: '三十件的累積，是校園裡少見的長期投入。' },
-  { level: 5, min: 50, title: '循環典範', sub: '你已是校園循環的中流砥柱，帶動整個社群。' }
-];
-const TIER_ZERO = {
-  level: 0,
-  title: '準備啟程',
-  sub: '完成第一筆交易，就能點亮你的第一個等級。'
-};
+import { TIERS, levelForTotal, tierForLevel } from './contribution.js';
 
 const loading = ref(true);
 const errorMsg = ref('');
@@ -140,13 +123,8 @@ const soldCount = ref(0);
 const boughtCount = ref(0);
 
 const total = computed(() => soldCount.value + boughtCount.value);
-
-const level = computed(() => {
-  let lv = 0;
-  for (const t of TIERS) if (total.value >= t.min) lv = t.level;
-  return lv;
-});
-const tier = computed(() => TIERS.find((t) => t.level === level.value) || TIER_ZERO);
+const level = computed(() => levelForTotal(total.value));
+const tier = computed(() => tierForLevel(level.value));
 const nextTier = computed(() => TIERS.find((t) => t.level === level.value + 1) || null);
 const nextThreshold = computed(() => nextTier.value?.min ?? null);
 const nextPct = computed(() => {
