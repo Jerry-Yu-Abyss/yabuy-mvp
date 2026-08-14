@@ -39,6 +39,21 @@
         </div>
       </section>
 
+      <section class="quick-stats-row">
+        <div class="quick-stat-chip">
+          <span class="qs-num">{{ activeListingCount }}</span>
+          <span class="qs-label">上架中</span>
+        </div>
+        <div class="quick-stat-chip">
+          <span class="qs-num">{{ soldListingCount }}</span>
+          <span class="qs-label">已售出</span>
+        </div>
+        <div class="quick-stat-chip">
+          <span class="qs-num">{{ myBoughtItems.length }}</span>
+          <span class="qs-label">已購買</span>
+        </div>
+      </section>
+
       <nav class="history-tabs-container">
         <div class="history-tabs">
           <div class="tab-item" :class="{ active: currentTab === 'fav' }" @click="currentTab = 'fav'">
@@ -730,6 +745,11 @@ const displayItems = computed(() => {
   return myBoughtItems.value;
 });
 
+// 🌟 個人頁快速統計：mySoldItems 其實是「賣場全部商品」（含上架中與已售出，
+// 見 fetchMyRecords 的 qSold），這裡各自計數；已買商品沿用 myBoughtItems 長度。
+const activeListingCount = computed(() => mySoldItems.value.filter(p => p.status !== 'sold').length);
+const soldListingCount = computed(() => mySoldItems.value.filter(p => p.status === 'sold').length);
+
 // 三格滑桿：喜愛(0) / 已買商品(1) / 我的賣場(2)
 const TAB_ORDER = ['fav', 'bought', 'sold'];
 const indicatorStyle = computed(() => ({
@@ -819,6 +839,15 @@ const removeFavorite = async (fav) => {
 .uid-tag .label { font-size: 10px; font-weight: 800; color: #fff; background: #7a8a6f; padding: 2px 7px; border-radius: 7px; letter-spacing: 0.5px; }
 .uid-tag .value { font-size: 12px; font-weight: 700; color: #555; letter-spacing: 0.5px; }
 
+/* 快速統計：上架中／已售出／已購買，沿用 .uid-tag 同一套淡底圓角 pill 語彙，
+   刻意做窄（小字級、小內距），不做成獨立卡片，維持整頁輕量 */
+.quick-stats-row { display: flex; gap: 8px; padding: 0 24px 14px; flex-shrink: 0; }
+.quick-stat-chip {
+  flex: 1; display: flex; align-items: baseline; justify-content: center; gap: 5px;
+  background: rgba(0,0,0,0.05); border-radius: 10px; padding: 7px 4px;
+}
+.qs-num { font-size: 15px; font-weight: 900; color: #2c3e50; line-height: 1; }
+.qs-label { font-size: 11px; font-weight: 700; color: #7a8a6f; }
 
 .history-tabs-container { padding: 0 24px; flex-shrink: 0; }
 .history-tabs { position: relative; background: rgba(0,0,0,0.04); height: 48px; border-radius: 16px; display: flex; padding: 4px; }
