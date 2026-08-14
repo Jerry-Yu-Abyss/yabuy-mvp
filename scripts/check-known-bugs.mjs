@@ -341,6 +341,28 @@ function checkSourceInvariants() {
         'SVGO 會拿掉 viewBox，icon 被 CSS 縮放時會裁切'
       );
 
+  // 1-5b 廣告插槽不該在同一次 recompute 裡重複塞同一則廣告
+  // 事故：商品清單夠長、一次出現不只一個「每 10 個」觸發點時，若只有 1 則
+  // 有效廣告，pickNextAd() 沒有排除「這次已經用過」的廣告，會把同一則廣告
+  // 塞進兩個不同插槽——使用者滑一下就撞見同一則廣告第二次，感覺像卡片壞掉。
+  const homeSrc = read('src/components/Home.vue');
+  const pickNextAdBody = extractFn(homeSrc, 'pickNextAd');
+  if (!pickNextAdBody) {
+    bad('找不到 pickNextAd', 'src/components/Home.vue：函式被改名或刪除，請同步更新此清單');
+  } else if (!/excludeThisPass/.test(pickNextAdBody)) {
+    bad(
+      'pickNextAd 失去同一次 recompute 的排除邏輯',
+      '只有 1 則有效廣告、商品清單又夠長時，同一則廣告會被塞進兩個插槽（重複出現）'
+    );
+  } else if (!/pickNextAd\(\s*usedAdIds\s*\)/.test(homeSrc)) {
+    bad(
+      'pickNextAd 呼叫端沒有傳入 usedAdIds',
+      '函式支援排除參數，但呼叫時沒帶，等於沒修好'
+    );
+  } else {
+    ok('廣告插槽不會在同一次 recompute 裡重複塞同一則廣告');
+  }
+
   // 1-5 規則檔不該退回「登入就行」
   const rules = read('firestore.rules');
   const LOOSE = [

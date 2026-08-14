@@ -182,13 +182,19 @@ const rebuildAdPool = () => {
   adRotationIndex = 0;
 };
 
-const pickNextAd = () => {
+// excludeThisPass：同一次 updateCardStack() 裡，前面的插槽已經用過的廣告 id。
+// 🐛 修復：沒有這層排除時，商品清單夠長（一次出現不只一個「每 10 個」觸發點）
+// 又只有 1 則有效廣告時，同一則廣告會在同一疊卡片裡被排進兩個不同插槽
+// （例如 i=0 跟 i=10 都觸發，兩邊都選到同一則），使用者滑一下就撞見同一則
+// 廣告第二次，感覺像卡片壞掉/跑版。有這層排除後，池子裡的廣告在單次重算裡
+// 最多只會被用一次，用完了就讓那個插槽空著（下次真的滑了 10 個商品才會再排）。
+const pickNextAd = (excludeThisPass) => {
   if (shuffledAdPool.length === 0) return null;
-  // 最多繞完整個池子一輪；全部都被使用者略過的話就不硬塞
+  // 最多繞完整個池子一輪；全部都被使用者略過或這次已經用過的話就不硬塞
   for (let tries = 0; tries < shuffledAdPool.length; tries++) {
     const ad = shuffledAdPool[adRotationIndex % shuffledAdPool.length];
     adRotationIndex++;
-    if (!dismissedAdIds.has(ad.id)) return ad;
+    if (!dismissedAdIds.has(ad.id) && !excludeThisPass?.has(ad.id)) return ad;
   }
   return null;
 };
@@ -260,8 +266,10 @@ const updateCardStack = (user) => {
     withAds.push(p);
     const globalCount = swipedProductCount.value + i + 1;
     if (globalCount % AD_INTERVAL === 0) {
-      const ad = pickNextAd();
-      // 同一則廣告可能因為輪替被排到好幾個插槽，id 要帶上插槽序號才不會跟 :key 衝突；
+      // 傳入 usedAdIds：同一則廣告這次 recompute 已經用過就不會再選到，
+      // 池子不夠大時該插槽就空著，不會硬塞同一則廣告造成使用者連撞兩次同一則廣告。
+      const ad = pickNextAd(usedAdIds);
+      // id 要帶上插槽序號（globalCount）才不會跟 :key 衝突；
       // adDocId 保留原本的 Firestore 文件 id，滑掉時要用這個去記錄「已略過」
       if (ad) { withAds.push({ ...ad, adDocId: ad.id, id: `ad-${ad.id}-${globalCount}`, type: 'ad' }); usedAdIds.add(ad.id); }
     }

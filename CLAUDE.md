@@ -52,10 +52,12 @@
 | 08-07 | 補齊缺失用戶資料（Auth／Firestore 對齊用的 Cloud Function）、**收緊 Firestore 規則**（讀寫範圍從「登入就行」改成「本人/當事人/管理員」，含 `orders`/`favorites`/`messages`/`audit_logs`/`users`）、Landing 頁公開統計（`getPublicStats`，聚合值不外洩原始資料）、教科書專區不顯示賣家名字 |
 | 08-08 | 修復 SVG icon 裁切（SVGO `removeViewBox` 問題，修在 `vite.config.js` 載入器層級）、**建立兩份回歸測試**（[[回歸測試-已知事故]] 事故驅動 / [[回歸測試-功能標準]] 40 項 Check List） |
 | 08-13 | 我的賣場：已售出商品移除編輯/下架按鈕，改顯示成交明細（實際售價/地點/時間，回頭查 `orders.finalPrice`） |
+| 08-13 | 個人頁快速統計、個人貢獻度機制（5 級，抽出 `contribution.js` 共用等級判定）、個人頁貢獻度徽章 |
+| 08-14 | **修復廣告重複顯示**：只有 1 則有效廣告、商品清單夠長時，`pickNextAd()` 沒排除同一次 recompute 已用過的廣告，導致同一疊卡片裡塞進兩個插槽；回歸測試補上這個案例（39 項） |
 
 ## 目前狀態速覽
 
-- 兩份回歸測試都在：`npm run check:bugs`（事故驅動，38 項全過）／`npm run check:func`（功能標準，40 項，4 自動 + 需人工驗證的分區清楚標在腳本輸出裡）
+- 兩份回歸測試都在：`npm run check:bugs`（事故驅動，39 項全過）／`npm run check:func`（功能標準，40 項，4 自動 + 需人工驗證的分區清楚標在腳本輸出裡）
 - Firestore 規則已版控（`firestore.rules`）；**Storage 規則尚未版控**，看不到現況，見 [[已知問題]]
 - 已知死碼：`Heart.vue`／`activeTab === 'heart'` 沒有任何按鈕會觸發，收藏功能改走 `User.vue` 的「喜愛」分頁
 - 4 支 Cloud Functions（`functions/src/index.ts`）：`addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`
