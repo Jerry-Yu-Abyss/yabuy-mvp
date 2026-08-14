@@ -89,6 +89,9 @@
       <!-- ── 排行榜 ── -->
       <Ranking v-else-if="view === 'ranking'" />
 
+      <!-- ── 個人貢獻度 ── -->
+      <Contribution v-else-if="view === 'contribution'" />
+
       <!-- ── 查看登入狀態 ── -->
       <template v-else-if="view === 'account-status'">
         <div class="status-card">
@@ -140,9 +143,11 @@ import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { toast } from './toast.js';
 import { subjectData } from './Subject.js';
 import Ranking from './Ranking.vue';
+import Contribution from './Contribution.vue';
 import IconUserPen from '@/assets/icons/user-pen.svg?component';
 import IconAward from '@/assets/icons/award.svg?component';
 import IconMailShield from '@/assets/icons/mail-shield.svg?component';
+import IconHeart from '@/assets/icons/heart.svg?component';
 
 const emit = defineEmits(['close', 'saved']);
 
@@ -166,14 +171,15 @@ const menuGroups = [
   {
     title: '校園動態',
     items: [
+      { key: 'contribution', icon: IconHeart, label: '個人貢獻度', desc: '等級、循環累計、永續價值', ready: true },
       { key: 'ranking', icon: IconAward, label: '排行榜', desc: '院所交易、交易王、循環累計', ready: true }
     ]
   }
 ];
 
-const view = ref('menu');   // 'menu' | 'profile' | 'ranking' | 'account-status'
+const view = ref('menu');   // 'menu' | 'profile' | 'ranking' | 'contribution' | 'account-status'
 
-const VIEW_TITLES = { profile: '更改個人資料', ranking: '排行榜', 'account-status': '登入狀態' };
+const VIEW_TITLES = { profile: '更改個人資料', ranking: '排行榜', contribution: '個人貢獻度', 'account-status': '登入狀態' };
 const viewTitle = computed(() => VIEW_TITLES[view.value] || '功能選單');
 
 const nameInput = ref('');
@@ -194,6 +200,16 @@ const onItemClick = async (key) => {
       return;
     }
     view.value = 'ranking';
+    return;
+  }
+
+  if (key === 'contribution') {
+    // 貢獻度是讀「自己的」訂單來統計，未登入沒有可統計的對象
+    if (!fbUser) {
+      toast('🔒 請先登入才能查看個人貢獻度。');
+      return;
+    }
+    view.value = 'contribution';
     return;
   }
 
