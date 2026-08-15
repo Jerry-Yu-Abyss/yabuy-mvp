@@ -12,8 +12,9 @@
  *      scripts/check-functional.mjs（通用功能標準，見 docs/wiki/回歸測試-功能標準.md）
  *
  * 執行：
- *   npm run check:bugs            # 檢查正式站
- *   npm run check:bugs -- --local # 只跑原始碼檢查，不打網路
+ *   npm run check:bugs            # 原始碼 + 正式站，全部都跑
+ *   npm run check:bugs -- --local # 只跑原始碼檢查，不打網路（給 check:code／commit 前用）
+ *   npm run check:bugs -- --prod  # 只打正式站，跳過原始碼檢查（給 check:prod／部署後用）
  *
  * 退出碼：0 = 全數通過；1 = 有項目失敗（非 0 就代表這次改動造成回歸）。
  *
@@ -32,6 +33,7 @@ const FS_BASE =
   `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
 
 const LOCAL_ONLY = process.argv.includes('--local');
+const PROD_ONLY = process.argv.includes('--prod');
 
 let pass = 0;
 let fail = 0;
@@ -384,10 +386,15 @@ function checkSourceInvariants() {
 (async () => {
   console.log(
     '\x1b[1mYaBuy 回歸測試 ①：事故驅動（防止已知 bug 復發）\x1b[0m' +
-      (LOCAL_ONLY ? '（僅原始碼）' : '')
+      (LOCAL_ONLY ? '（僅原始碼）' : PROD_ONLY ? '（僅正式站）' : '')
   );
 
-  checkSourceInvariants();
+  if (!PROD_ONLY) {
+    checkSourceInvariants();
+  } else {
+    console.log('\n（--prod：跳過原始碼檢查，只驗正式站現況）');
+  }
+
   if (!LOCAL_ONLY) {
     await checkRules();
     await checkProductData();

@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "shell": "bash",
+            "command": "cd \"C:/Users/reso9/Desktop/yabuy-mvp\" && npm run check:code; code=$?; if [ \"$code\" -ne 0 ]; then echo \"npm run check:code 失敗（exit $code）— commit 已擋下。上面是失敗項目，修好後再重新 commit（見 CLAUDE.md 鐵則 #5）。\" >&2; exit 2; fi",
+            "timeout": 60,
+            "statusMessage": "commit 前先跑 check:code（原始碼回歸測試）…"
+          }
+        ]
+      }
+    ]
+  }
+}

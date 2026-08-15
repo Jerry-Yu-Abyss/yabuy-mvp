@@ -17,7 +17,8 @@
  *   3. 列出完整 Check List 與進度，明確指出「下一步該做什麼」
  *
  * 執行：
- *   npm run check:func                      # 跑自動項目 + 顯示進度
+ *   npm run check:func                      # 跑全部自動項目（含打網路）+ 顯示進度
+ *   npm run check:func -- --local           # 只跑不需網路的自動項目（給 check:code／commit 前用）
  *   npm run check:func -- --list            # 只列 Check List，不執行
  *   npm run check:func -- --pass C-03 "備註" # 記錄某項人工驗證通過
  *   npm run check:func -- --fail C-03 "原因" # 記錄某項人工驗證失敗
@@ -76,6 +77,7 @@ const CASES = [
     title: 'Landing 頁公開統計顯示真實數字',
     expect: 'getPublicStats 匿名回傳 totalUsers 與 circulatedItems 兩個非負整數',
     runner: RUNNER.AUTO,
+    network: true, // 打正式站 Cloud Function，--local 時跳過
     fn: async () => {
       const res = await fetch(`${FN_BASE}/getPublicStats`, {
         method: 'POST',
@@ -332,6 +334,7 @@ const CASES = [
     title: '公開複合查詢實際可執行',
     expect: '首頁／教科書用的 products 查詢直接打 REST 能回 200（證明索引真的已部署，不只是宣告）',
     runner: RUNNER.AUTO,
+    network: true, // 打正式站 Firestore REST，--local 時跳過
     // ⚠️ 這裡的查詢條件必須與前端**完全一致（含 where 的數量）**。
     //    少送一個 where 就變成另一組索引需求，測出來的 400 是假警報。
     fn: async () => {
@@ -562,6 +565,7 @@ for (const [f, s] of [['--pass', 'pass'], ['--fail', 'fail'], ['--reset', 'reset
   }
 }
 const LIST_ONLY = argv.includes('--list');
+const LOCAL_ONLY = argv.includes('--local');
 
 const C = {
   g: (s) => `\x1b[32m${s}\x1b[0m`,
@@ -572,13 +576,18 @@ const C = {
 };
 
 (async () => {
-  console.log(C.b('\nYaBuy 回歸測試 ②：功能標準（系統該有的行為是否正常）'));
+  console.log(
+    C.b('\nYaBuy 回歸測試 ②：功能標準（系統該有的行為是否正常）') +
+      (LOCAL_ONLY ? C.d('（--local：只跑不打網路的自動項目）') : '')
+  );
 
   const manual = loadResults();
   const status = {}; // id → {mark, note}
 
   for (const c of CASES) {
-    if (c.runner === RUNNER.AUTO && !LIST_ONLY) {
+    if (c.runner === RUNNER.AUTO && c.network && LOCAL_ONLY) {
+      status[c.id] = { mark: 'skipped', note: '--local：跳過（需打網路，改用 npm run check:prod）' };
+    } else if (c.runner === RUNNER.AUTO && !LIST_ONLY) {
       try {
         const [okAuto, detail] = await c.fn();
         status[c.id] = okAuto
@@ -603,6 +612,7 @@ const C = {
     'man-pass': C.g('[人工 ✓]'),
     'man-fail': C.r('[人工 ✗]'),
     todo: C.y('[ 待測 ]'),
+    skipped: C.d('[ 跳過 ]'),
   };
 
   let lastArea = '';
@@ -618,7 +628,9 @@ const C = {
     if (s.mark === 'todo') console.log(C.d(`            期待：${c.expect}`));
   }
 
-  /* ── 進度總結 ── */
+  /* ── 進度總結 ──
+     skipped（--local 跳過的網路案例）不算「待測」也不算「完成」，
+     單獨列出，避免和真正需要人工驗證的項目混在一起、稀釋進度意義。 */
   const all = CASES.length;
   const done = CASES.filter((c) =>
     ['auto-pass', 'man-pass'].includes(status[c.id].mark)
@@ -626,13 +638,17 @@ const C = {
   const failed = CASES.filter((c) =>
     ['auto-fail', 'man-fail'].includes(status[c.id].mark)
   ).length;
-  const todo = all - done - failed;
+  const skipped = CASES.filter((c) => status[c.id].mark === 'skipped').length;
+  const todo = CASES.filter((c) => status[c.id].mark === 'todo').length;
   const pct = Math.round((done / all) * 100);
   const bar = '█'.repeat(Math.round(pct / 5)).padEnd(20, '░');
 
   console.log(C.b('\n─────────────────────────────────────────────'));
   console.log(C.b(`進度  ${bar}  ${done}/${all} (${pct}%)`));
-  console.log(`      ${C.g(`通過 ${done}`)} · ${failed ? C.r(`失敗 ${failed}`) : `失敗 ${failed}`} · ${C.y(`待測 ${todo}`)}`);
+  console.log(
+    `      ${C.g(`通過 ${done}`)} · ${failed ? C.r(`失敗 ${failed}`) : `失敗 ${failed}`} · ${C.y(`待測 ${todo}`)}` +
+      (skipped ? ` · ${C.d(`跳過 ${skipped}`)}` : '')
+  );
 
   if (failed) {
     console.log(C.r('\n⚠ 失敗項目（必須先修好）：'));
