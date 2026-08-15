@@ -27,6 +27,7 @@
 | 部署／自訂網域／寄信 | [[部署與環境]]、[[自訂網域與寄信設定]] |
 | 改完要不要驗證 | [[回歸測試-功能標準]] —— 40 項 Check List，標明誰能執行 |
 | 已知但還沒修的技術債 | [[已知問題]] |
+| **改動 agent 工作流本身**（加檢查／加閘門／換驗證方式） | [Harness Engineering.md](Harness%20Engineering.md) —— 組件清冊，不在 wiki 裡 |
 
 ## 鐵則（不在程式碼裡看得出來，但一定要遵守）
 
@@ -34,30 +35,16 @@
 2. **commit／push 需要使用者明確要求**才做。工作流是：改程式碼 → `npm run build` → `firebase deploy --only hosting`（改 `functions/` 或 `firestore.rules` 要另外部署）→ 驗證 → 等指示。
 3. 使用者說「我手動測試就好」時，不要再自己跑瀏覽器驗證。
 4. commit 訊息用繁體中文，格式 `動詞: 簡述`（`修復:`／`新增:`／`移除:`／`修改:`），內文寫根因不是只描述改了什麼。
-5. 改完程式碼先跑 `npm run check`（= `check:bugs` + `check:func`），細節見上面兩份回歸測試文件。
+5. 改完程式碼先跑 `npm run check:code`（全離線、約 2 秒，只驗工作目錄）。**這條已由 commit 閘門強制**：`git commit` 會自動跑一次，沒過就擋下。部署後另跑 `npm run check:prod` 驗正式站。細節見 [Harness Engineering.md](Harness%20Engineering.md)。
 
-## 工作進度（依 git log 整理，非逐筆 commit）
+## 專案歷史
 
-| 時期 | 完成內容 |
-|---|---|
-| 2026-07-08 | 專案初始化（Vue 3 + Firebase），README 操作手冊 |
-| 07-09 ～ 07-12 | Landing 導覽頁響應式改版、底部液態玻璃選單（含水滴效果） |
-| 07-14 ～ 07-17 | 上架頁（Cam.vue）調整、個人主頁加入喜愛清單與點選交易 |
-| 07-30 | 修復多處選單被遮蔽、iPhone 瀏海安全區跑版 |
-| 08-01 | Email 登入、List 選單個人資料編輯、買入請求可取消、**Wiki 建立**（docs/wiki/，Obsidian 結構） |
-| 08-02 ～ 08-05 | 個人資料設定學院、**排行榜**（院所交易直方圖／交易王 TOP 10／循環利用累計）、面交流程狀態同步修復、**簡化版安全交易流程**（罐頭訊息、取消次數限制、實體 QR 掃碼取代人對人掃碼） |
-| 08-05 | 查看登入狀態＋密碼重設、**廣告投放功能**（首頁卡片穿插、管理員後台管理） |
-| 08-06 | Map 頁交易點卡片瀏覽、**PWA 圖示與 iOS 加入主畫面支援**、商品巡邏統計、**修復 Google 首次登入未建檔**（Landing.vue 漏呼叫 upsertUserDoc）、**修復交易按鈕防連點** |
-| 08-06 | 修復交易按鈕「感覺遲緩」（`ensureVerified` 對已驗證帳號短路，跳過多餘 `reload()`） |
-| 08-07 | 補齊缺失用戶資料（Auth／Firestore 對齊用的 Cloud Function）、**收緊 Firestore 規則**（讀寫範圍從「登入就行」改成「本人/當事人/管理員」，含 `orders`/`favorites`/`messages`/`audit_logs`/`users`）、Landing 頁公開統計（`getPublicStats`，聚合值不外洩原始資料）、教科書專區不顯示賣家名字 |
-| 08-08 | 修復 SVG icon 裁切（SVGO `removeViewBox` 問題，修在 `vite.config.js` 載入器層級）、**建立兩份回歸測試**（[[回歸測試-已知事故]] 事故驅動 / [[回歸測試-功能標準]] 40 項 Check List） |
-| 08-13 | 我的賣場：已售出商品移除編輯/下架按鈕，改顯示成交明細（實際售價/地點/時間，回頭查 `orders.finalPrice`） |
-| 08-13 | 個人頁快速統計、個人貢獻度機制（5 級，抽出 `contribution.js` 共用等級判定）、個人頁貢獻度徽章 |
-| 08-14 | **修復廣告重複顯示**：只有 1 則有效廣告、商品清單夠長時，`pickNextAd()` 沒排除同一次 recompute 已用過的廣告，導致同一疊卡片裡塞進兩個插槽；回歸測試補上這個案例（39 項） |
+需要時跑 `git log --oneline`。**不要在這裡維護進度表** —— 它會單調成長、每輪都要付 token，而 git 已經是唯一事實來源。
 
 ## 目前狀態速覽
 
 - 兩份回歸測試都在：`npm run check:bugs`（事故驅動，39 項全過）／`npm run check:func`（功能標準，40 項，4 自動 + 需人工驗證的分區清楚標在腳本輸出裡）
+- 檢查已拆成離線／線上兩條：`check:code`（F1 原始碼 16 項 + F2 靜態案例，commit 閘門用這條）／`check:prod`（規則、線上資料、部署產物 23 項）；`npm run check` 兩者都跑，覆蓋範圍與拆分前一致
 - Firestore 規則已版控（`firestore.rules`）；**Storage 規則尚未版控**，看不到現況，見 [[已知問題]]
 - 已知死碼：`Heart.vue`／`activeTab === 'heart'` 沒有任何按鈕會觸發，收藏功能改走 `User.vue` 的「喜愛」分頁
 - 4 支 Cloud Functions（`functions/src/index.ts`）：`addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`
