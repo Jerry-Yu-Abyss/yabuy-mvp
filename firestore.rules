@@ -64,19 +64,49 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
+      // 這筆訂單的當事人（買家或賣家）
+      function isParty() {
+        return request.auth.uid == resource.data.buyerId ||
+               request.auth.uid == resource.data.sellerId;
+      }
+
+      // 買賣雙方身分與商品不可事後變更，否則等同整筆訂單被挾持
+      // （例：把 sellerId 改成自己，就能把別人談好的交易據為己有）
+      function immutablePartiesKept() {
+        return request.resource.data.get('buyerId', '') == resource.data.get('buyerId', '')
+            && request.resource.data.get('sellerId', '') == resource.data.get('sellerId', '')
+            && request.resource.data.get('productId', '') == resource.data.get('productId', '');
+      }
+
+      // 改期次數上限：賣家 1 次、買家 2 次。
+      // 原本這條**只在 Mailbox.vue 前端擋**，繞過前端直接打 REST 就能把
+      // negotiationStep 設成任意值、無限改期。規則層只接受兩種情況：
+      //   (1) 這次更新根本沒動 negotiationStep（接受/婉拒/就緒/成交等都屬此類）
+      //   (2) 剛好 +1，且該角色的既有次數還沒用完
+      function negotiationStepOk() {
+        let prev = resource.data.get('negotiationStep', 0);
+        let next = request.resource.data.get('negotiationStep', prev);
+        return next == prev
+            || (next == prev + 1
+                && (request.auth.uid == resource.data.sellerId ? prev < 1 : prev < 2));
+      }
+
       // 只有這筆訂單的買家、賣家、或管理員能看到／動到——原本任何登入者都能
       // 讀寫任何一筆訂單，等於別人的面交時間地點、價格全部攤在陽光下。
-      allow read: if request.auth != null &&
-        (request.auth.uid == resource.data.buyerId ||
-         request.auth.uid == resource.data.sellerId ||
-         isAdmin());
-      // 建立時一定是買家本人發起（TradeModal.vue 一律把 buyerId 設成 auth.uid）
-      allow create: if request.auth != null &&
-        request.resource.data.buyerId == request.auth.uid;
-      allow update: if request.auth != null &&
-        (request.auth.uid == resource.data.buyerId ||
-         request.auth.uid == resource.data.sellerId ||
-         isAdmin());
+      allow read: if request.auth != null && (isParty() || isAdmin());
+
+      // 建立時一定是買家本人發起（TradeModal.vue 一律把 buyerId 設成 auth.uid）。
+      // buyerId != sellerId 這條原本也只在 TradeModal.vue 前端擋，繞過前端就能
+      // 自買自賣，污染排行榜與貢獻度統計。
+      allow create: if request.auth != null
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.buyerId != request.resource.data.sellerId;
+
+      allow update: if request.auth != null && (
+        isAdmin()
+        || (isParty() && immutablePartiesKept() && negotiationStepOk())
+      );
+
       // 目前沒有任何地方會刪除訂單，不開放
       allow delete: if false;
     }

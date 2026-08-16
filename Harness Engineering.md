@@ -35,13 +35,16 @@ Agent 是無狀態函數 `f(context) → action`,不記得上次、不能驗證�
 | **F2** | 功能標準(40 項) | [scripts/check-functional.mjs](scripts/check-functional.mjs) | 同上 | ⚠️ 4 自動過,35 待測 |
 | **F3** | 人工驗證帳本 | [scripts/functional-results.json](scripts/functional-results.json) | 人手動 `--pass` | ⚠️ 僅 1 筆,無時效性 |
 | **F4** | 檢查路由 | [package.json](package.json) | 人 / E1 | ✅ 已拆 code/prod |
+| **F5** | 交易流程 × 安全規則(29 項) | [scripts/check-trade-flow.mjs](scripts/check-trade-flow.mjs) | `check:trade`／`check:code`(自動 skip) | ✅ 全過 · 需 emulator |
+| **F6** | Emulator 工具與種子 | [scripts/emulator-helpers.mjs](scripts/emulator-helpers.mjs)、[scripts/seed-emulator.mjs](scripts/seed-emulator.mjs) | `emu:seed` | ✅ |
 | **E1** | Commit 閘門 | [.claude/settings.json](.claude/settings.json) | `git commit` 自動 | ✅ 已實測會擋 |
 | **E2** | 個人權限白名單 | `.claude/settings.local.json` | Claude Code | ⚠️ 未版控、有死路徑 |
 | **E3** | 執行期權限規則 | [firestore.rules](firestore.rules) | Firebase 執行期 | ✅ 版控中 |
 | **R1** | Dev server | [.claude/launch.json](.claude/launch.json) | 瀏覽器驗證時 | ✅ :5173 |
-| **R2** | Firebase 設定 | [firebase.json](firebase.json) | 部署 / F1 / F2 | ⚠️ 無 emulator 區塊 |
-| **R3** | 正式環境 `yabuy-2026a` | — | F1/F2 網路檢查對象 | ⚠️ 唯一資料來源 |
-| **H1–H4** | 待建組件 | — | — | 📋 見下方規劃 |
+| **R2** | Firebase 設定 | [firebase.json](firebase.json) | 部署 / F1 / F2 | ✅ 已有 emulators 區塊 |
+| **R3** | 正式環境 `yabuy-2026a` | — | F1/F2 網路檢查對象 | ⚠️ 仍是 F1/F2 唯一資料來源 |
+| **R4** | 本機 Emulator | auth 9099 / firestore 8080 / UI 4000 | `npm run emu`(**需 JDK**) | ✅ F5/F6 的執行環境 |
+| **H2–H4** | 待建組件 | — | — | 📋 見下方規劃 |
 
 ---
 
@@ -142,7 +145,45 @@ matcher: "Bash"  +  if: "Bash(git commit *)"   ← 精準攔截,不影響其他 
 
 ## 待建組件
 
-### H1 · Emulator + 交易流程自動化 ⭐ 投報率最高
+### ✅ H1 · Emulator + 交易流程自動化 —— 已完成（2026-08-15）
+
+實作成果見 **F5／F6／R4**。與原規劃的差異，以及兩個必須記住的結論：
+
+**① 前置需求是 JDK，不是 Node。** Firestore emulator 是 JVM 程式。規劃時沒料到，
+實際執行時整個卡住。這正好印證推論 4：能力邊界由環境決定，不由腳本品質決定。
+
+**② 最大的收穫不是狀態機，是「第三個帳號」。** 原本以為主要價值在自動化 C-03～C-15，
+實際上更值錢的是 emulator 讓我們能用**登入但無關的第三者**去試探規則——正式站上永遠
+不敢這樣做。29 項裡有 13 項是這類隔離測試，全部通過，而它們**在此之前從未被驗證過**
+（`check:prod` 只驗匿名讀取）。
+
+**③ 沒有把 DUO 改成 AUTO。** F5 驗的是**資料層契約與安全規則**，不是 UI 行為。
+功能標準裡「雙方信箱各自看得到」「顯示提示『賣家僅限改期一次』」這類敘述，F5 一項
+都沒驗到。把 runner 改成 AUTO 會讓人以為驗過了，違反規則 5。路線 (b)（把狀態轉移
+從 `Mailbox.vue`／`Deal.vue` 抽成共用模組）仍未動，那才是讓 DUO 真正變 AUTO 的前提。
+
+#### F5 順帶發現的三個安全缺口 —— 已在規則層補上
+
+F5 一上線就撈出三個「前端擋得住、後端擋不住」的缺口。**這正是這層測試的價值：
+它們全都不是程式碼寫錯，而是規則從來沒有涵蓋，所以任何既有檢查都不會紅。**
+
+| 缺口 | 原本 | 現在（`firestore.rules` 的 `orders`） |
+|---|---|---|
+| 改期次數上限 | 賣家 1 次／買家 2 次**只在 `Mailbox.vue` 前端擋** | `negotiationStepOk()`：只接受「不變」或「剛好 +1 且該角色未達上限」 |
+| 不能買自己的商品 | **只在 `TradeModal.vue` 前端擋** | `create` 加 `buyerId != sellerId` |
+| 訂單可被挾持 | 無任何防護（測試時才發現） | `immutablePartiesKept()`：`buyerId`/`sellerId`/`productId` 不可事後變更 |
+
+規則的判斷條件是**對照 `Mailbox.vue:349-363` 的實際行為寫的**（`step + 1`、
+賣家 `step >= 1` 擋、買家 `step >= 2` 擋），不是憑空設計，所以不會誤擋正常流程——
+F5 第 6 節同時驗證了「合法遞增要允許」與「超過上限要擋」兩個方向。
+
+F5 第 6 節已從 `note()`（記錄現況）升級成 `expectDenied()`／`expectAllowed()`
+（防止退化），F5 總數 29 → 37 項。
+
+> ⚠️ **這些規則要 `firebase deploy --only firestore:rules` 才會在正式站生效。**
+> emulator 綠燈只代表規則本身正確，不代表正式站已經受保護。
+
+### H1 原始規劃（保留備查）
 
 F2 的 16 項 `DUO` 幾乎就是整個交易狀態機(C-03～C-15),也是最容易出錯的區域。卡住的唯一原因是**造不出買賣雙方**。
 
