@@ -187,6 +187,36 @@ const eq = (label, actual, expected) =>
     'rules orders.create 要求 buyerId === auth.uid，否則可偽造他人訂單'
   );
 
+  expectDenied(
+    '指定一個沒賣這件商品的人當賣家',
+    await setDoc(
+      'orders/order-hijack',
+      { ...orderBase, sellerId: third.uid },
+      buyer.token
+    ),
+    'orders.create 的 sellerOwnsProduct 要求 sellerId 就是該商品的擁有者。若通過，就能隨手抓路人 uid 大量建單（塞爆對方信箱），再一路改成 completed 灌爆全站統計'
+  );
+
+  expectDenied(
+    '建單時直接夾帶成交價',
+    await setDoc(
+      'orders/order-price',
+      { ...orderBase, finalPrice: 9999 },
+      buyer.token
+    ),
+    'orders.create 不接受 finalPrice：成交價只能在 accepted 階段由買家填'
+  );
+
+  expectDenied(
+    '建單時直接指定非 pending 的狀態',
+    await setDoc(
+      'orders/order-jump',
+      { ...orderBase, status: 'completed' },
+      buyer.token
+    ),
+    'orders.create 限 status === pending，否則可以直接生出一筆「已完成」訂單'
+  );
+
   // 賣家改提案 → negotiating
   await updateDoc(
     `orders/${OID}`,
@@ -209,13 +239,39 @@ const eq = (label, actual, expected) =>
   eq('C-09 買家就緒', o.data.buyerReady, true);
   eq('C-09 賣家就緒', o.data.sellerReady, true);
 
-  // 成交：finalPrice + completed + 商品下架
-  await updateDoc(`orders/${OID}`, { finalPrice: 300, status: 'completed' }, seller.token);
+  // 成交價：只有買家能填，且不得超過 MAX_PRICE（Deal.vue = 10000）
+  expectDenied(
+    'C-11 買家不可寫超過上限的成交價',
+    await updateDoc(`orders/${OID}`, { finalPrice: 999999 }, buyer.token),
+    'orders.update 的 finalPriceOk 有上限；只在前端擋的話，繞過就能把排行榜的「循環利用金額」灌到失真'
+  );
+  expectDenied(
+    'C-11 賣家不可代替買家填成交價',
+    await updateDoc(`orders/${OID}`, { finalPrice: 1 }, seller.token),
+    'orders.update 的 finalPriceOk 規定成交價只有買家能填（Deal.vue 的 price 步驟）'
+  );
+
+  // 成交：買家出價 → 賣家確認 → 商品下架（兩步，對照 Deal.vue 的實際流程）
+  await updateDoc(`orders/${OID}`, { finalPrice: 300 }, buyer.token);
+
+  expectDenied(
+    '買家不可單方面把訂單改成 completed',
+    await updateDoc(`orders/${OID}`, { status: 'completed' }, buyer.token),
+    'orders.update 的 statusFlowOk 規定 completed 只有賣家能按。若通過，配合「隨便指定路人當賣家」就能一個人灌爆 getRankingStats／getPublicStats'
+  );
+
+  await updateDoc(`orders/${OID}`, { status: 'completed' }, seller.token);
   await updateDoc(`products/${PID}`, { status: 'sold', soldAt: new Date() }, seller.token);
 
   o = await getDoc(`orders/${OID}`, seller.token);
   eq('C-11 finalPrice 寫入', o.data.finalPrice, 300);
   eq('C-12 訂單 → completed', o.data.status, 'completed');
+
+  expectDenied(
+    'completed 是終止態，不可被改回 accepted',
+    await updateDoc(`orders/${OID}`, { status: 'accepted' }, buyer.token),
+    'orders.update 的 statusFlowOk 只允許 next == prev 離開終止態，否則成交紀錄可被反覆翻案'
+  );
 
   const p = await getDoc(`products/${PID}`, seller.token);
   eq('C-12 商品 → sold', p.data.status, 'sold');
@@ -278,20 +334,52 @@ const eq = (label, actual, expected) =>
 
   await setDoc(`users/${seller.uid}`, { id: seller.uid, email: seller.email, ratingSum: 0, ratingCount: 0 }, seller.token);
 
+  // 評價文件 id 固定為 `${orderId}_${raterId}`：唯一性由 rules 直接驗 id 組成，
+  // 一筆訂單每人只能評一次，不靠前端自律（Deal.vue 已改用 setDoc 帶這個 id）。
+  const REV = `${OID}_${buyer.uid}`;
+  const reviewBase = {
+    orderId: OID, raterId: buyer.uid, ratedId: seller.uid,
+    ratedRole: 'seller', stars: 5, comment: '很好', createdAt: new Date(),
+  };
+
+  expectDenied(
+    '評價文件 id 不符 `${orderId}_${raterId}` 規格',
+    await setDoc('reviews/rev-1', reviewBase, buyer.token),
+    'reviews.create 驗 id 組成；隨機 id 會讓同一筆訂單能重複刷評價'
+  );
+
+  expectDenied(
+    '星等超出 1..5',
+    await setDoc(`reviews/${REV}`, { ...reviewBase, stars: 99999 }, buyer.token),
+    'reviews.create 限 1..5 的整數，否則一次就能把對方評分灌到天上'
+  );
+
+  expectDenied(
+    '對沒跟自己交易過的人留評價',
+    await setDoc(
+      `reviews/${OID}_${third.uid}`,
+      { ...reviewBase, raterId: third.uid, ratedId: seller.uid },
+      third.token
+    ),
+    'reviews.create 的 ratingPairOk 要求評分雙方就是該筆 completed 訂單的買賣方'
+  );
+
   expectAllowed(
     'C-13 買家可對賣家留評價',
-    await setDoc(
-      'reviews/rev-1',
-      { orderId: OID, raterId: buyer.uid, ratedId: seller.uid, ratedRole: 'seller', stars: 5, comment: '很好', createdAt: new Date() },
-      buyer.token
-    ),
-    'reviews.create 要求 raterId === auth.uid'
+    await setDoc(`reviews/${REV}`, reviewBase, buyer.token),
+    'reviews.create：completed 訂單的當事人、id 合規、星等合法'
+  );
+
+  expectDenied(
+    'C-13 同一筆訂單不可重複評價',
+    await setDoc(`reviews/${REV}`, { ...reviewBase, stars: 1 }, buyer.token),
+    'id 已存在 → 這次是 update，而 reviews.update 一律 false'
   );
 
   expectDenied(
     '冒他人之名留評價',
     await setDoc(
-      'reviews/rev-fake',
+      `reviews/${OID}_${seller.uid}`,
       { orderId: OID, raterId: seller.uid, ratedId: buyer.uid, stars: 1, createdAt: new Date() },
       third.token
     ),
@@ -300,20 +388,30 @@ const eq = (label, actual, expected) =>
 
   expectDenied(
     'C-13 評論文字不外流（非管理員讀不到 reviews）',
-    await getDoc('reviews/rev-1', seller.token),
+    await getDoc(`reviews/${REV}`, seller.token),
     'reviews.read 限管理員；被評價者自己也不該讀到評論內文'
   );
 
-  expectAllowed(
-    '任何登入者可累加評分彙總',
-    await updateDoc(`users/${seller.uid}`, { ratingSum: 5, ratingCount: 1 }, buyer.token),
-    'users.update 第 (2) 條允許 hasOnly([ratingSum, ratingCount])'
+  // ⚠️ 這兩條原本是 expectAllowed（規則有一條「只動 ratingSum/ratingCount 就放行」
+  // 的分支）。那等於任何登入者都能把任意 uid 的評分設成任意值——自己刷滿分、
+  // 把別人刷成 0 分，完全不需要交易過。該分支已移除，改由 Cloud Function
+  // onReviewCreated 用 Admin SDK 累加，前端一律不可寫這兩個欄位。
+  expectDenied(
+    '不可直接竄改他人的評分彙總',
+    await updateDoc(`users/${seller.uid}`, { ratingSum: 9999, ratingCount: 1 }, buyer.token),
+    'users.update 已禁止前端寫 ratingSum/ratingCount，唯一來源是 reviews → onReviewCreated'
+  );
+
+  expectDenied(
+    '不可自行把自己的評分刷成滿分',
+    await updateDoc(`users/${seller.uid}`, { ratingSum: 9999, ratingCount: 1 }, seller.token),
+    'users.update 第 (1) 條的 hasAny 已把 ratingSum/ratingCount 一起列入禁改清單'
   );
 
   expectDenied(
     '不可藉評分更新順便改他人其他欄位',
     await updateDoc(`users/${seller.uid}`, { ratingSum: 5, email: 'hacked@evil.com' }, buyer.token),
-    'users.update 的 hasOnly 必須擋住夾帶其他欄位'
+    'users.update 對非本人只剩管理員改 status 一條路'
   );
 
   expectDenied(

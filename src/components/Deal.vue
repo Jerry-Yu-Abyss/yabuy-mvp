@@ -211,7 +211,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import jsQR from 'jsqr';       // 掃描 QR（純 JS，iOS 也支援）：npm install jsqr
 import { db, auth } from '@/firebase';
-import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection, increment } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { codeForLocationName, nameForLocationCode } from './TradePoints.js';
 import DealTimeline from './DealTimeline.vue';
 
@@ -256,8 +256,17 @@ const submitRating = async () => {
   if (!ratedId) { alert('缺少對方資訊，無法評價'); ratingDone.value = true; return; }
   ratingSubmitting.value = true;
   try {
-    // 1) 完整評價（含文字）寫入 reviews —— 只有管理端可讀，文字不會外流給對方
-    await addDoc(collection(db, 'reviews'), {
+    // 完整評價（含文字）寫入 reviews —— 只有管理端可讀，文字不會外流給對方。
+    //
+    // 文件 id 固定是 `${orderId}_${raterId}`（原本是 addDoc 隨機 id）：
+    //   1. 一筆訂單每人只能評一次，重複送出會撞 id 被規則擋掉
+    //   2. 規則能直接驗 id 的組成，唯一性不必靠前端自律
+    //
+    // users.ratingSum / ratingCount 不再由前端寫入 —— 原本那條規則放行
+    // 「只動這兩個欄位」的更新，沒限制對象也沒限制數值，任何登入者都能把
+    // 自己刷成滿分、把別人刷成 0 分。現在改由 Cloud Function onReviewCreated
+    // 監聽這份 reviews 文件、用 Admin SDK 累加，前端寫入一律會被規則拒絕。
+    await setDoc(doc(db, 'reviews', `${props.order.id}_${me.uid}`), {
       orderId: props.order.id,
       raterId: me.uid,
       ratedId: ratedId,
@@ -265,11 +274,6 @@ const submitRating = async () => {
       stars: ratingStars.value,
       comment: ratingComment.value.trim(),
       createdAt: serverTimestamp()
-    });
-    // 2) 只把「星等彙總」更新到對方用戶文件 —— 前台個人頁只讀得到平均數字，讀不到文字
-    await updateDoc(doc(db, 'users', ratedId), {
-      ratingSum: increment(ratingStars.value),
-      ratingCount: increment(1)
     });
     ratingDone.value = true;
   } catch (e) {

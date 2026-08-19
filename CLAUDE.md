@@ -45,7 +45,7 @@
 
 - 兩份回歸測試都在：`npm run check:bugs`（事故驅動，39 項全過）／`npm run check:func`（功能標準，40 項，4 自動 + 需人工驗證的分區清楚標在腳本輸出裡）
 - 檢查已拆成離線／線上兩條：`check:code`（F1 原始碼 16 項 + F2 靜態案例 + F5 交易流程，commit 閘門用這條）／`check:prod`（規則、線上資料、部署產物 23 項）；`npm run check` 兩者都跑
-- **第三份檢查 `npm run check:trade`（29 項）需要 Firebase Emulator**：驗交易狀態機與安全規則，是唯一能用「第三個登入帳號」測隔離的一層。先 `npm run emu`（需 JDK）再跑；沒開 emulator 時 `check:code` 會自動 skip，不會擋 commit
+- **第三份檢查 `npm run check:trade`（49 項）需要 Firebase Emulator**：驗交易狀態機與安全規則，是唯一能用「第三個登入帳號」測隔離的一層。先 `npm run emu`（需 JDK）再跑；沒開 emulator 時 `check:code` 會自動 skip，不會擋 commit
 - Firestore 規則已版控（`firestore.rules`）；**Storage 規則尚未版控**，看不到現況，見 [[已知問題]]
 - 已知死碼：`Heart.vue`／`activeTab === 'heart'` 沒有任何按鈕會觸發，收藏功能改走 `User.vue` 的「喜愛」分頁
 - 4 支 Cloud Functions（`functions/src/index.ts`）：`addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`

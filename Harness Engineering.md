@@ -35,7 +35,7 @@ Agent 是無狀態函數 `f(context) → action`,不記得上次、不能驗證�
 | **F2** | 功能標準(40 項) | [scripts/check-functional.mjs](scripts/check-functional.mjs) | 同上 | ⚠️ 4 自動過,35 待測 |
 | **F3** | 人工驗證帳本 | [scripts/functional-results.json](scripts/functional-results.json) | 人手動 `--pass` | ⚠️ 僅 1 筆,無時效性 |
 | **F4** | 檢查路由 | [package.json](package.json) | 人 / E1 | ✅ 已拆 code/prod |
-| **F5** | 交易流程 × 安全規則(29 項) | [scripts/check-trade-flow.mjs](scripts/check-trade-flow.mjs) | `check:trade`／`check:code`(自動 skip) | ✅ 全過 · 需 emulator |
+| **F5** | 交易流程 × 安全規則(49 項) | [scripts/check-trade-flow.mjs](scripts/check-trade-flow.mjs) | `check:trade`／`check:code`(自動 skip) | ✅ 全過 · 需 emulator |
 | **F6** | Emulator 工具與種子 | [scripts/emulator-helpers.mjs](scripts/emulator-helpers.mjs)、[scripts/seed-emulator.mjs](scripts/seed-emulator.mjs) | `emu:seed` | ✅ |
 | **E1** | Commit 閘門 | [.claude/settings.json](.claude/settings.json) | `git commit` 自動 | ✅ 已實測會擋 |
 | **E2** | 個人權限白名單 | `.claude/settings.local.json` | Claude Code | ⚠️ 未版控、有死路徑 |
@@ -154,7 +154,7 @@ matcher: "Bash"  +  if: "Bash(git commit *)"   ← 精準攔截,不影響其他 
 
 **② 最大的收穫不是狀態機，是「第三個帳號」。** 原本以為主要價值在自動化 C-03～C-15，
 實際上更值錢的是 emulator 讓我們能用**登入但無關的第三者**去試探規則——正式站上永遠
-不敢這樣做。29 項裡有 13 項是這類隔離測試，全部通過，而它們**在此之前從未被驗證過**
+不敢這樣做。49 項裡有 13 項是這類隔離測試，全部通過，而它們**在此之前從未被驗證過**
 （`check:prod` 只驗匿名讀取）。
 
 **③ 沒有把 DUO 改成 AUTO。** F5 驗的是**資料層契約與安全規則**，不是 UI 行為。

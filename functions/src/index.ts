@@ -3,6 +3,7 @@
 // firebase-functions v2 + TypeScript
 
 import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {onDocumentCreated} from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 
 admin.initializeApp();
@@ -314,3 +315,37 @@ export const getPublicStats = onCall(async () => {
     circulatedItems: completedOrdersCount.data().count,
   };
 });
+
+// ── 評分彙總（reviews → users.ratingSum / ratingCount）──
+// 背景：原本 Deal.vue 直接對「被評價者」的 users 文件寫
+// ratingSum: increment(n)，而 firestore.rules 有一條「只要這次更新
+// hasOnly(['ratingSum','ratingCount']) 就放行」的分支——沒有限制對象、
+// 沒有限制數值、也沒有要求真的發生過交易。任何登入者打開 devtools 就能
+// 把自己刷成滿分，或把別人的評分設成 0，前端的 increment() 只是自律。
+//
+// 現在前端一律不可寫這兩個欄位（規則已移除該分支），改由這支 trigger 用
+// Admin SDK 累加。「有沒有資格評分」的把關全部集中在 reviews 的建立條件：
+// 必須是該筆 completed 訂單的當事人、評的是對面那個人、一筆訂單只能評一次
+// （文件 id 固定為 `${orderId}_${raterId}`）、星等必須是 1..5 的整數。
+export const onReviewCreated = onDocumentCreated(
+  "reviews/{reviewId}",
+  async (event) => {
+    const review = event.data?.data();
+    if (!review) return;
+
+    const ratedId = review.ratedId as string | undefined;
+    const stars = Number(review.stars);
+
+    // 規則已經擋過一次；這裡再擋一次，因為 Admin SDK 的寫入不經過規則，
+    // 日後若有腳本補資料，不該讓髒資料直接汙染彙總值。
+    if (!ratedId || !Number.isInteger(stars) || stars < 1 || stars > 5) {
+      console.warn("略過無效評價", event.params.reviewId, {ratedId, stars});
+      return;
+    }
+
+    await admin.firestore().collection("users").doc(ratedId).set({
+      ratingSum: admin.firestore.FieldValue.increment(stars),
+      ratingCount: admin.firestore.FieldValue.increment(1),
+    }, {merge: true});
+  }
+);

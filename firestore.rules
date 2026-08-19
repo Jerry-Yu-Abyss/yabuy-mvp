@@ -29,18 +29,22 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.auth.uid == uid;
 
-      // 更新規則：三種情況之一才允許
+      // 更新規則：兩種情況之一才允許
+      //
+      // ⚠️ 曾經有第三種：「任何登入者只要 hasOnly(['ratingSum','ratingCount'])
+      // 就放行」。那條沒有限制對象、也沒有限制數值，等於任何人都能對任意 uid
+      // 把評分設成任意值——自己刷成滿分、或把競爭對手刷成 0 分，完全不需要跟
+      // 對方交易過（Deal.vue 用 increment() 只是前端自律，規則並不強制）。
+      // 現在 ratingSum / ratingCount 前端一律不可寫，改由 Cloud Function
+      // onReviewCreated 以 Admin SDK 累加，來源是通過驗證的 reviews 文件。
       allow update: if request.auth != null && (
-        // (1) 本人改自己，但不可自行竄改 isAdmin / isFounder
+        // (1) 本人改自己，但不可自行竄改 isAdmin / isFounder / 評分彙總
         (
           request.auth.uid == uid
           && !request.resource.data.diff(resource.data).affectedKeys()
-                .hasAny(['isAdmin', 'isFounder'])
+                .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount'])
         )
-        // (2) 任何登入者只能累加評分彙總這兩個欄位
-        || request.resource.data.diff(resource.data).affectedKeys()
-              .hasOnly(['ratingSum', 'ratingCount'])
-        // (3) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
+        // (2) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
         || (
           isAdmin()
           && request.resource.data.diff(resource.data).affectedKeys()
@@ -91,6 +95,56 @@ service cloud.firestore {
                 && (request.auth.uid == resource.data.sellerId ? prev < 1 : prev < 2));
       }
 
+      // 賣家必須真的是這件商品的擁有者。原本沒驗，代表可以隨手抓一個路人的
+      // uid 當 sellerId 大量建單（對方信箱同時被塞爆），再配合下面的
+      // statusFlowOk 一路改成 completed，一個人就能灌爆排行榜與首頁公開統計。
+      function sellerOwnsProduct(pid) {
+        return exists(/databases/$(database)/documents/products/$(pid))
+            && get(/databases/$(database)/documents/products/$(pid))
+                 .data.get('sellerId', '') == request.resource.data.sellerId;
+      }
+
+      // 訂單狀態機（見 docs/wiki/交易生命週期.md）。原本規則層完全不管 status，
+      // 買家可以自己把訂單一路改成 completed、成交價填天文數字，而
+      // getRankingStats / getPublicStats 都是直接讀 orders 算出來的——等於
+      // 排行榜、循環利用金額、首頁「已流通件數」全部可被單方面偽造。
+      // 這裡把合法轉移列成白名單，關鍵是 completed 只有賣家能按（對應
+      // Deal.vue 的 seller-confirm-price 畫面，買家單方面成交不了）。
+      function statusFlowOk() {
+        let prev = resource.data.get('status', '');
+        let next = request.resource.data.get('status', prev);
+        return next == prev
+            // 改提案／接受／婉拒／取消：pending 與 negotiating 階段雙方都能操作
+            || ((prev == 'pending' || prev == 'negotiating')
+                && (next == 'negotiating' || next == 'accepted'
+                    || next == 'rejected'))
+            // 面交中：任一方都能取消或判定失敗
+            || (prev == 'accepted' && (next == 'rejected' || next == 'failed'))
+            // 成交：限賣家確認，且買家必須已填過有效成交價
+            || (prev == 'accepted' && next == 'completed'
+                && request.auth.uid == resource.data.sellerId
+                && resource.data.get('finalPrice', 0) is number
+                && resource.data.get('finalPrice', 0) > 0);
+        // completed / rejected / failed 是終止態：只剩 next == prev 會過
+      }
+
+      // 成交價：只有買家能填（Deal.vue 的 price 步驟），只有賣家能退回成 null
+      // （sellerConfirmPrice(false)），而且都必須發生在 accepted 階段。
+      // 上限與 Deal.vue 的 MAX_PRICE 一致——那邊只是前端擋，繞過就能寫進天文
+      // 數字，把排行榜的「循環利用金額」灌到失真。兩邊改動要同步。
+      function finalPriceOk() {
+        let stage = resource.data.get('status', '');
+        let prev = resource.data.get('finalPrice', null);
+        let next = request.resource.data.get('finalPrice', prev);
+        return next == prev
+            || (stage == 'accepted'
+                && request.auth.uid == resource.data.buyerId
+                && next is number && next > 0 && next <= 10000)
+            || (stage == 'accepted'
+                && request.auth.uid == resource.data.sellerId
+                && next == null);
+      }
+
       // 只有這筆訂單的買家、賣家、或管理員能看到／動到——原本任何登入者都能
       // 讀寫任何一筆訂單，等於別人的面交時間地點、價格全部攤在陽光下。
       allow read: if request.auth != null && (isParty() || isAdmin());
@@ -100,11 +154,18 @@ service cloud.firestore {
       // 自買自賣，污染排行榜與貢獻度統計。
       allow create: if request.auth != null
         && request.resource.data.buyerId == request.auth.uid
-        && request.resource.data.buyerId != request.resource.data.sellerId;
+        && request.resource.data.buyerId != request.resource.data.sellerId
+        && request.resource.data.get('status', '') == 'pending'
+        && request.resource.data.get('negotiationStep', 0) == 0
+        && !('finalPrice' in request.resource.data)
+        && request.resource.data.productId is string
+        && request.resource.data.productId != ''
+        && sellerOwnsProduct(request.resource.data.productId);
 
       allow update: if request.auth != null && (
         isAdmin()
-        || (isParty() && immutablePartiesKept() && negotiationStepOk())
+        || (isParty() && immutablePartiesKept() && negotiationStepOk()
+            && statusFlowOk() && finalPriceOk())
       );
 
       // 目前沒有任何地方會刪除訂單，不開放
@@ -126,9 +187,40 @@ service cloud.firestore {
       allow create, delete: if isAdmin();
     }
 
-    match /reviews/{id} {
+    // 評價。這裡是評分的唯一入口——users.ratingSum / ratingCount 已經禁止前端
+    // 寫入，改由 Cloud Function onReviewCreated 監聽本 collection 累加，所以
+    // 「能不能刷分」完全取決於下面這幾條能不能被繞過：
+    //   1. 文件 id 固定為 `${orderId}_${raterId}`：一筆訂單每人只能評一次，
+    //      重複送出會撞 id 而被 create 拒絕（不靠前端自律）
+    //   2. stars 必須是 1..5 的整數，擋掉一次灌 99999 分
+    //   3. 必須是「這筆 completed 訂單的當事人」評「對面那個人」，
+    //      擋掉對陌生人評分、以及自己評自己
+    match /reviews/{reviewId} {
+      // 回頭查 orders：評分資格的真正判準在訂單，不在 reviews 自己的欄位。
+      // orderId 用參數傳進來，路徑字面值才能維持在同一行。
+      function ratingPairOk(orderId) {
+        let o = get(/databases/$(database)/documents/orders/$(orderId)).data;
+        let rater = request.resource.data.raterId;
+        let rated = request.resource.data.ratedId;
+        return o.status == 'completed'
+            && ((rater == o.buyerId && rated == o.sellerId)
+                || (rater == o.sellerId && rated == o.buyerId));
+      }
+
+      function orderExists(orderId) {
+        return exists(/databases/$(database)/documents/orders/$(orderId));
+      }
+
       allow create: if request.auth != null
-                    && request.auth.uid == request.resource.data.raterId;
+        && request.resource.data.raterId == request.auth.uid
+        && request.resource.data.ratedId != request.auth.uid
+        && request.resource.data.orderId is string
+        && reviewId == request.resource.data.orderId + '_' + request.auth.uid
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5
+        && orderExists(request.resource.data.orderId)
+        && ratingPairOk(request.resource.data.orderId);
       allow read: if isAdmin();
       allow update, delete: if false;
     }
