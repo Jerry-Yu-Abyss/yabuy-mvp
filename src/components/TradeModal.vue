@@ -31,6 +31,9 @@
             <p v-if="tradeInfo.time && !isTimeValid" class="warning-text">
               ⚠️ 安全提醒：僅限 06:00 - 18:00 間交易
             </p>
+            <p v-else-if="!enforceSafeHours" class="warning-text test-mode">
+              🧪 測試模式：管理員已暫時關閉 06:00 - 18:00 的時段限制
+            </p>
           </Transition>
         </section>
 
@@ -73,12 +76,13 @@ import { auth, db } from '@/firebase';
 import { toast } from './toast.js';
 import { isAnyModalOpen, registerModalOpen, registerModalClose } from './modalState.js';
 import { blockUnverifiedForTrade } from './verify.js';
+import { enforceSafeHours, isTradeHourAllowed, subscribeTradeSettings } from './tradeSettings.js';
 import { collection, addDoc, doc, getDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import SendSuccessAnimation from './SendSuccessAnimation.vue';
 
 // 彈窗掛載＝正在開啟，卸載＝已關閉。App.vue 讀共享計數器來收起底部選單，
 // 不需要每個開啟本元件的父頁面各自 emit 通知。
-onMounted(() => { registerModalOpen(); });
+onMounted(() => { registerModalOpen(); subscribeTradeSettings(); });
 onUnmounted(() => { registerModalClose(); });
 
 const props = defineProps(['product']);
@@ -124,11 +128,12 @@ const tradeInfo = reactive({
   location: ''
 });
 
-// ✅ 邏輯檢查：禁止 18:00 後至 06:00 前的交易
+// ✅ 邏輯檢查：禁止 18:00 後至 06:00 前的交易。
+// 判斷本身移到 tradeSettings.js，因為管理端可以整條關掉（測試用），而且
+// CannedChat 的推遲提議要走同一條規則——兩邊各寫一份就會改了一邊漏一邊。
 const isTimeValid = computed(() => {
   if (!tradeInfo.time) return true;
-  const hour = new Date(tradeInfo.time).getHours();
-  return hour >= 6 && hour < 18;
+  return isTradeHourAllowed(new Date(tradeInfo.time).getHours());
 });
 
 const handleSend = async () => {
@@ -247,4 +252,5 @@ const sendTradeRequest = async () => {
 .confirm-action-btn:not(:disabled):active { transform: scale(0.97); }
 .slide-fade-enter-active, .slide-fade-leave-active { transition: all 0.3s ease; }
 .slide-fade-enter-from, .slide-fade-leave-to { opacity: 0; transform: translateY(-10px); }
+.warning-text.test-mode { color: #b26a00; }
 </style>

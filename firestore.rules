@@ -309,6 +309,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // 平台設定（目前只有 settings/trade，控制交易時段限制要不要強制）。
+    // 一般使用者必須讀得到——TradeModal 依它決定要不要驗 06:00–18:00，讀不到
+    // 就會退回「限制生效」，等於管理員關掉了卻沒人受惠。寫入限管理員。
+    match /settings/{docId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
     // 廣告投放：首頁未登入也看得到（跟 products 一樣公開可讀），
     // 只有管理員能新增/修改/刪除廣告內容與上下架期限。
     match /ads/{adId} {

@@ -103,6 +103,22 @@
           </button>
         </div>
 
+        <!-- 🧪 交易時段限制開關：測試逾期／推遲時常需要在晚上造資料 -->
+        <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !enforceSafeHours }">
+          <div class="claim-text">
+            <strong>🕒 交易時段限制（06:00 - 18:00）</strong>
+            <span>{{ enforceSafeHours ? '✅ 生效中：非時段內無法發起交易' : '🧪 已關閉：任何時間都能發起交易' }}</span>
+          </div>
+          <button
+            class="btn-claim"
+            :class="{ 'btn-danger-toggle': enforceSafeHours }"
+            :disabled="hoursToggleLoading"
+            @click="toggleSafeHours"
+          >
+            {{ hoursToggleLoading ? '處理中...' : (enforceSafeHours ? '暫時關閉' : '重新開啟') }}
+          </button>
+        </div>
+
         <div v-if="loadingUsers" class="state-hint">
           <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
           <p>載入使用者名單中...</p>
@@ -466,6 +482,7 @@ import { toast, confirmDialog } from './toast.js';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, addDoc, serverTimestamp, getDocs, updateDoc } from 'firebase/firestore';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Indicate from './Indicate.vue';
+import { enforceSafeHours, setEnforceSafeHours, subscribeTradeSettings } from './tradeSettings.js';
 
 const emit = defineEmits(['back']);
 const currentTab = ref('patrol');
@@ -715,6 +732,42 @@ const runBackfill = async () => {
 };
 
 // 設為 / 取消其他用戶的管理員（創辦人或現有管理員可用）
+// ================= 🌟 交易時段限制開關 =================
+// 這條限制一直都只有前端在擋（firestore.rules 算不出時段——orders.time 是
+// 不含時區的字串），所以關掉的是「前端會不會擋」。因為它會即時影響所有使用
+// 者，切換一律寫入稽核紀錄，事後查得到是誰在什麼時候關的。
+const hoursToggleLoading = ref(false);
+
+const toggleSafeHours = async () => {
+  const turningOff = enforceSafeHours.value;
+  const ok = await confirmDialog(
+    turningOff
+      ? '確定要暫時關閉 06:00 - 18:00 的交易時段限制嗎？\n\n關閉期間「所有使用者」都能在任何時間發起交易，' +
+        '交易彈窗會顯示測試模式提示。測試完請記得重新開啟。'
+      : '確定要重新開啟 06:00 - 18:00 的交易時段限制嗎？'
+  );
+  if (!ok) return;
+
+  hoursToggleLoading.value = true;
+  try {
+    await setEnforceSafeHours(!turningOff, auth.currentUser?.uid);
+    await writeAuditLog(
+      'security',
+      turningOff ? '🧪 交易時段限制已關閉' : '🔒 交易時段限制已重新開啟',
+      turningOff
+        ? '管理員暫時關閉 06:00 - 18:00 的交易時段限制，關閉期間所有使用者可在任何時間發起交易。'
+        : '管理員重新開啟 06:00 - 18:00 的交易時段限制。',
+      { level: turningOff ? 'warning' : 'normal' }
+    );
+    toast.success(turningOff ? '🧪 已關閉時段限制' : '🔒 已重新開啟時段限制');
+  } catch (e) {
+    console.error('[Admin] 切換交易時段限制失敗：', e.code, e.message);
+    toast('❌ 切換失敗，請重試。');
+  } finally {
+    hoursToggleLoading.value = false;
+  }
+};
+
 const toggleAdmin = async (u) => {
   if (!isFounder.value) { toast.error('❌ 只有創辦人可以新增或取消管理員'); return; }
   if (u.id === myUid.value) { toast.error('❌ 無法變更自己的管理員權限'); return; }
@@ -985,6 +1038,7 @@ onMounted(() => {
   fetchAuditLogs();
   fetchAllAds();
   refreshClaimStatus();
+  subscribeTradeSettings();
 });
 
 onUnmounted(() => {
@@ -1159,6 +1213,8 @@ onUnmounted(() => {
 .claim-text span { font-size: 12px; color: #888; }
 .btn-claim { flex-shrink: 0; background: #333; color: #fff; border: none; border-radius: 12px; padding: 10px 16px; font-size: 13px; font-weight: 800; cursor: pointer; }
 .btn-claim:disabled { background: #ccc; }
+.btn-danger-toggle { background: #c1440e; }
+.settings-box.is-off { background: #fff3ef; border-color: #ffccbc; }
 .backfill-box { border-color: #ffe0b2; background: #fffdf8; }
 .admin-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #fff; background: #5a9461; padding: 2px 8px; border-radius: 8px; vertical-align: middle; }
 .founder-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #7a5b00; background: linear-gradient(135deg, #ffe082, #ffca28); padding: 2px 8px; border-radius: 8px; vertical-align: middle; box-shadow: 0 1px 3px rgba(214,167,0,0.4); }

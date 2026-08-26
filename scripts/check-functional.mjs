@@ -350,6 +350,17 @@ const CASES = [
     runner: RUNNER.DUO,
   },
 
+  {
+    id: 'C-19',
+    area: 'C. 交易邏輯',
+    title: '管理端可切換交易時段限制',
+    expect:
+      '管理後台「用戶管理」分頁的「🕒 交易時段限制」按下「暫時關閉」後，' +
+      'settings/trade.enforceSafeHours=false，交易彈窗提示改為「🧪 測試模式」' +
+      '且 18:00 後的時間可以送出；重新開啟後恢復攔截。兩次切換都會寫入 audit_logs',
+    runner: RUNNER.AUTH,
+  },
+
   /* ───── D. 資料庫互動 ───── */
   {
     id: 'D-01',
@@ -542,8 +553,9 @@ function checkIndexCoverage() {
 /** D-03：業務常數必須與規格一致，被誤改會直接影響交易規則 */
 function checkBusinessConstants() {
   const checks = [
-    ['交易時段下限 06:00', 'src/components/TradeModal.vue', /hour >= 6/],
-    ['交易時段上限 18:00', 'src/components/TradeModal.vue', /hour < 18/],
+    ['交易時段下限 06:00', 'src/components/tradeSettings.js', /SAFE_HOUR_START = 6/],
+    ['交易時段上限 18:00', 'src/components/tradeSettings.js', /SAFE_HOUR_END = 18/],
+    ['時段開關預設為「限制生效」', 'src/components/tradeSettings.js', /enforceSafeHours = ref\(true\)/],
     ['安全交易前置 10 分鐘', 'src/components/Mailbox.vue', /SAFE_TRADE_WINDOW_MS = 10 \* 60 \* 1000/],
     ['取消上限 3 次', 'src/components/Mailbox.vue', /CANCEL_LIMIT = 3/],
     ['取消週期 30 天', 'src/components/Mailbox.vue', /CANCEL_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],

@@ -77,6 +77,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { auth } from '@/firebase';
 import { toast } from './toast.js';
+import { isTradeHourAllowed, isWithinSafeHours, subscribeTradeSettings } from './tradeSettings.js';
 import {
   CANNED_MESSAGES,
   DELAY_LABEL,
@@ -137,12 +138,14 @@ const toInputValue = (ms) => {
 const defaultProposal = () => {
   const base = Math.max(appointmentMs() ?? Date.now(), Date.now());
   const d = new Date(base + 30 * 60 * 1000);
+  // 限制關掉時就不必挪——挪了反而讓測試者拿不到「現在 +30 分」這種時間
+  if (isWithinSafeHours(d.getHours()) || !isTradeHourAllowed(d.getHours())) {
+    return toInputValue(d.getTime());
+  }
   if (d.getHours() >= 18) {
     d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-  } else if (d.getHours() < 6) {
-    d.setHours(9, 0, 0, 0);
   }
+  d.setHours(9, 0, 0, 0);
   return toInputValue(d.getTime());
 };
 
@@ -161,7 +164,8 @@ const delayError = computed(() => {
   const cur = appointmentMs();
   if (cur != null && t <= cur) return '推遲的時間要比原本的約定時間晚';
   const h = new Date(t).getHours();
-  if (h < 6 || h >= 18) return '面交時間限 06:00–18:00'; // 與 TradeModal.vue 同一條規則
+  // 與 TradeModal.vue 同一條規則，管理員關掉時段限制時這裡也跟著放行
+  if (!isTradeHourAllowed(h)) return '面交時間限 06:00–18:00';
   return null;
 });
 
@@ -200,6 +204,7 @@ const scrollToBottom = () => {
 };
 
 onMounted(() => {
+  subscribeTradeSettings();
   unsub = subscribeOrderMessages(
     props.order.id,
     (list) => { messages.value = list; loading.value = false; scrollToBottom(); },

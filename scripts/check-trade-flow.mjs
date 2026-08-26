@@ -889,6 +889,36 @@ const eq = (label, actual, expected) =>
     eq('訂單成立不滿 12 小時就逾期 → 不記給任何人', await readNoReply(seller.uid), 1);
   }
 
+  /* ─────────────────────────────────────────────────────────────
+     10. 平台設定（settings/trade）
+     ───────────────────────────────────────────────────────────── */
+  section('10. 平台設定（settings/trade）');
+
+  // 交易時段限制的開關。一般人必須讀得到（TradeModal 靠它決定驗不驗），
+  // 但只有管理員能改——否則任何人都能自己把安全時段規則關掉。
+  await setDoc(
+    'settings/trade',
+    { enforceSafeHours: true, updatedAt: new Date() },
+    'owner'
+  );
+
+  const setRead = await getDoc('settings/trade', buyer.token);
+  setRead.ok
+    ? ok('一般使用者讀得到交易設定', `(enforceSafeHours=${setRead.data.enforceSafeHours})`)
+    : bad('一般使用者讀不到交易設定', `HTTP ${setRead.status}。讀不到就會退回「限制生效」，管理員關掉也沒人受惠`);
+
+  expectDenied(
+    '一般使用者不可自行關閉時段限制',
+    await updateDoc('settings/trade', { enforceSafeHours: false }, buyer.token),
+    'settings 的寫入限管理員。若任何人都能改，這條安全時段規則等於不存在'
+  );
+
+  expectDenied(
+    '第三者同樣不可寫入平台設定',
+    await setDoc('settings/trade', { enforceSafeHours: false }, third.token),
+    '同上，create／覆寫也要一起擋'
+  );
+
   /* ── 總結 ──────────────────────────────────────────────────── */
   console.log(C.b('\n─────────────────────────────────────────────'));
   console.log(C.b(`結果  通過 ${pass} 項，失敗 ${fail} 項`));
