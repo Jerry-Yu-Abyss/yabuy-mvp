@@ -318,6 +318,26 @@ const CASES = [
     expect: '買賣雙方看得到彼此訊息；第三方帳號讀取該 orderId 的 messages 被規則拒絕',
     runner: RUNNER.DUO,
   },
+  {
+    id: 'C-16',
+    area: 'C. 交易邏輯',
+    title: '逾期 30 分鐘後改走逾期關閉',
+    expect:
+      '約定時間過 30 分鐘且雙方未都按安全交易 → 徽章變「⏰ 已逾期」、安全交易按鈕消失、' +
+      '出現「逾期關閉」且取消 ✕ 不再顯示；按下後 status=expired，按的人不扣任何額度，' +
+      '爽約記在「沒按安全交易」的一方（onOrderExpired 寫 expireCount，兩邊都沒按時各記一次）；' +
+      '滿 3 次的人發起新交易會被擋；雙方都已按過安全交易的訂單不會被判逾期',
+    runner: RUNNER.DUO,
+  },
+  {
+    id: 'C-17',
+    area: 'C. 交易邏輯',
+    title: '推遲面交時間（買賣各 1 次）',
+    expect:
+      '聊天室送出「希望推遲至 X 點」→ 對方看到卡片可同意／婉拒；同意後 orders.time 立即更新、' +
+      '雙方卡片同步；同一角色第 2 次入口變「推遲次數已用完」；逾期訂單經同意推遲後會重新可交易',
+    runner: RUNNER.DUO,
+  },
 
   /* ───── D. 資料庫互動 ───── */
   {
@@ -519,6 +539,12 @@ function checkBusinessConstants() {
     ['成交金額上限 10000', 'src/components/Deal.vue', /MAX_PRICE = 10000/],
     ['賣家改期上限 1 次', 'src/components/Mailbox.vue', /'sell' && step >= 1/],
     ['買家改期上限 2 次', 'src/components/Mailbox.vue', /'buy' && step >= 2/],
+    ['逾期寬限 30 分鐘', 'src/components/Mailbox.vue', /EXPIRE_GRACE_MS = 30 \* 60 \* 1000/],
+    ['爽約上限 3 次（規則層）', 'firestore.rules', /expireCount', 0\) >= 3/],
+    ['爽約上限 3 次（前端提示）', 'src/components/TradeModal.vue', /EXPIRE_LIMIT = 3/],
+    ['爽約週期 30 天（規則層）', 'firestore.rules', /duration\.value\(30, 'd'\)/],
+    ['爽約週期 30 天（Function）', 'functions/src/index.ts', /EXPIRE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],
+    ['推遲上限 24 小時', 'src/components/CannedChat.vue', /MAX_DELAY_MS = 24 \* 60 \* 60 \* 1000/],
   ];
   const bad = [];
   for (const [label, file, re] of checks) {

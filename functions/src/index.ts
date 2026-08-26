@@ -3,8 +3,12 @@
 // firebase-functions v2 + TypeScript
 
 import {onCall, HttpsError} from "firebase-functions/v2/https";
-import {onDocumentCreated} from "firebase-functions/v2/firestore";
+import {
+  onDocumentCreated,
+  onDocumentUpdated,
+} from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
+import {FieldValue} from "firebase-admin/firestore";
 
 admin.initializeApp();
 
@@ -140,10 +144,10 @@ export const backfillUserDocs = onCall(async (request) => {
         verify: resolveVerifyStatus(user),
         createdAt: creationTime ?
           admin.firestore.Timestamp.fromDate(new Date(creationTime)) :
-          admin.firestore.FieldValue.serverTimestamp(),
+          FieldValue.serverTimestamp(),
         lastLogin: lastSignInTime ?
           admin.firestore.Timestamp.fromDate(new Date(lastSignInTime)) :
-          admin.firestore.FieldValue.serverTimestamp(),
+          FieldValue.serverTimestamp(),
         backfilled: true, // 標記為補建，方便日後追查來源
       });
     }
@@ -344,8 +348,63 @@ export const onReviewCreated = onDocumentCreated(
     }
 
     await admin.firestore().collection("users").doc(ratedId).set({
-      ratingSum: admin.firestore.FieldValue.increment(stars),
-      ratingCount: admin.firestore.FieldValue.increment(1),
+      ratingSum: FieldValue.increment(stars),
+      ratingCount: FieldValue.increment(1),
     }, {merge: true});
+  }
+);
+
+// ── 逾期爽約紀錄 ──────────────────────────────────────────────────
+// 訂單被判逾期關閉時，記一次爽約給「沒出現的那一方」。
+//
+// 為什麼非得放伺服器端：前端寫不了別人的 users 文件（規則只允許本人改自己
+// 的），而這裡要扣的正是對方的次數。連帶地，expireCount / expirePeriodStart
+// 已經被列進 users.update 的不可竄改清單——只有這支 trigger 用 Admin SDK
+// 寫得動，否則被記次的人只要把數字改回 0 就能繞過發起交易的閘門。
+//
+// 「沒出現」＝沒按下安全交易（buyerReady / sellerReady）。逾期的定義本身就是
+// 「雙方沒有都按下」，所以這裡至少會抓到一個人；兩個都沒按時兩個都算。
+const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const onOrderExpired = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+    // 只在「這一次更新把它變成 expired」時記次，避免同一筆訂單被重複計算
+    if (before.status === "expired" || after.status !== "expired") return;
+
+    const offenders: string[] = [];
+    if (after.buyerReady !== true && typeof after.buyerId === "string") {
+      offenders.push(after.buyerId);
+    }
+    if (after.sellerReady !== true && typeof after.sellerId === "string") {
+      offenders.push(after.sellerId);
+    }
+    if (offenders.length === 0) return;
+
+    const db = admin.firestore();
+    await Promise.all(offenders.map((uid) =>
+      // 交易而非單純 increment：跨週期要歸零重算，得先讀到現值才知道
+      // 該歸零還是累加，讀寫之間必須是原子的
+      db.runTransaction(async (tx) => {
+        const ref = db.collection("users").doc(uid);
+        const snap = await tx.get(ref);
+        const data = snap.data() || {};
+        const startMs = data.expirePeriodStart?.toMillis?.() ?? null;
+        const periodOver =
+          startMs === null || Date.now() - startMs > EXPIRE_PERIOD_MS;
+
+        tx.set(ref, periodOver ? {
+          expireCount: 1,
+          expirePeriodStart: FieldValue.serverTimestamp(),
+        } : {
+          expireCount: FieldValue.increment(1),
+        }, {merge: true});
+      })
+    ));
+
+    console.log("逾期記次", event.params.orderId, offenders);
   }
 );

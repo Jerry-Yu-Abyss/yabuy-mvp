@@ -27,7 +27,12 @@ service cloud.firestore {
       // email 等個資只給登入者看（原本 if true 讓沒登入的人也能撈到全站 email
       // 清單），一般瀏覽（首頁商品等）本來就不靠讀這個 collection，不受影響。
       allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == uid;
+      // create 原本沒有任何欄位限制（見 docs/wiki/已知問題.md 第 9 條）。這裡
+      // 至少先把爽約欄位堵住：還沒有 users 文件的人若能自己建一份帶
+      // expireCount: 0 的文件，等於憑空清掉紀錄。update 那條擋得住既有文件，
+      // 擋不住「先建一份乾淨的」這條路。
+      allow create: if request.auth != null && request.auth.uid == uid
+        && !request.resource.data.keys().hasAny(['expireCount', 'expirePeriodStart']);
 
       // 更新規則：兩種情況之一才允許
       //
@@ -42,7 +47,8 @@ service cloud.firestore {
         (
           request.auth.uid == uid
           && !request.resource.data.diff(resource.data).affectedKeys()
-                .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount'])
+                .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount',
+                         'expireCount', 'expirePeriodStart'])
         )
         // (2) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
         || (
@@ -68,6 +74,22 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
+      // 逾期爽約閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動
+      // 恢復（不需要人工解鎖）。次數由 Cloud Function onOrderExpired 以
+      // Admin SDK 寫入，users.update 已把 expireCount / expirePeriodStart
+      // 列入本人不可竄改的清單——否則只要把數字改回 0 就能繞過這道閘門。
+      //
+      // 沒有 users 文件的舊帳號（backfillUserDocs 的存在證明確實有）不該被
+      // 誤擋，所以 expirePeriodStart 取不到時用 2000-01-01 當預設：那個週期
+      // 早就過完，條件必定為 false。
+      function notExpireBanned() {
+        let path = /databases/$(database)/documents/users/$(request.auth.uid);
+        let u = exists(path) ? get(path).data : {};
+        let start = u.get('expirePeriodStart', timestamp.date(2000, 1, 1));
+        return !(u.get('expireCount', 0) >= 3
+                 && request.time < start + duration.value(30, 'd'));
+      }
+
       // 這筆訂單的當事人（買家或賣家）
       function isParty() {
         return request.auth.uid == resource.data.buyerId ||
@@ -95,6 +117,24 @@ service cloud.firestore {
                 && (request.auth.uid == resource.data.sellerId ? prev < 1 : prev < 2));
       }
 
+      // 「希望推遲面交時間」額度：買家 1 次、賣家 1 次，各自獨立，與改期
+      // （negotiationStep）分開計算。比照 negotiationStepOk 在規則層強制——
+      // 只在前端擋的話，繞過就能無限發推遲請求把約定時間一路往後推，
+      // 等於繞過逾期關閉機制、把商品無限期綁在一筆訂單上。
+      // 旗標只能 false → true，而且只有本人能立自己那一支。
+      function delayUsedOk() {
+        let pb = resource.data.get('buyerDelayUsed', false);
+        let nb = request.resource.data.get('buyerDelayUsed', pb);
+        let ps = resource.data.get('sellerDelayUsed', false);
+        let ns = request.resource.data.get('sellerDelayUsed', ps);
+        return (nb == pb
+                || (pb == false && nb == true
+                    && request.auth.uid == resource.data.buyerId))
+            && (ns == ps
+                || (ps == false && ns == true
+                    && request.auth.uid == resource.data.sellerId));
+      }
+
       // 賣家必須真的是這件商品的擁有者。原本沒驗，代表可以隨手抓一個路人的
       // uid 當 sellerId 大量建單（對方信箱同時被塞爆），再配合下面的
       // statusFlowOk 一路改成 completed，一個人就能灌爆排行榜與首頁公開統計。
@@ -118,8 +158,13 @@ service cloud.firestore {
             || ((prev == 'pending' || prev == 'negotiating')
                 && (next == 'negotiating' || next == 'accepted'
                     || next == 'rejected'))
-            // 面交中：任一方都能取消或判定失敗
-            || (prev == 'accepted' && (next == 'rejected' || next == 'failed'))
+            // 面交中：任一方都能取消或判定失敗，或以「逾期」結案。
+            // expired 的 30 分鐘判定在 Mailbox.vue，規則層算不出來——orders.time
+            // 是不含時區的 "YYYY-MM-DD HH:mm" 字串（見 docs/wiki/新交易流程規格.md
+            // 風險 2），rules 沒有字串轉時間的手段。這裡只保證「終點合法」：
+            // 只有 accepted 能變 expired，且 expired 之後誰也改不動。
+            || (prev == 'accepted'
+                && (next == 'rejected' || next == 'failed' || next == 'expired'))
             // 成交：限賣家確認，且買家必須已填過有效成交價
             || (prev == 'accepted' && next == 'completed'
                 && request.auth.uid == resource.data.sellerId
@@ -160,12 +205,13 @@ service cloud.firestore {
         && !('finalPrice' in request.resource.data)
         && request.resource.data.productId is string
         && request.resource.data.productId != ''
-        && sellerOwnsProduct(request.resource.data.productId);
+        && sellerOwnsProduct(request.resource.data.productId)
+        && notExpireBanned();
 
       allow update: if request.auth != null && (
         isAdmin()
         || (isParty() && immutablePartiesKept() && negotiationStepOk()
-            && statusFlowOk() && finalPriceOk())
+            && statusFlowOk() && finalPriceOk() && delayUsedOk())
       );
 
       // 目前沒有任何地方會刪除訂單，不開放
@@ -233,7 +279,25 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.senderId == request.auth.uid
         && isOrderParty(request.resource.data.orderId);
-      allow update, delete: if false;
+
+      // 原本是 update: if false。「希望推遲至 X 點面交」需要收訊的一方能回覆
+      // 同意／婉拒，所以得開一條縫，範圍鎖到最小：
+      //   - 只有訊息的「收件者」（訂單當事人、且不是發送者本人）能改
+      //     ——否則發送者可以自己同意自己的推遲請求
+      //   - 只准動 requestStatus 一個欄位
+      //     ——否則能先發「推遲到 15:00」，等對方同意後再把 proposedTime
+      //       偷改成別的時間，對方畫面上的同意紀錄就對不上實際改成的時間
+      //   - 只能從 pending 出發，且終點限 accepted / declined
+      //     ——回覆過就定案，不能反覆翻案
+      allow update: if request.auth != null
+        && isOrderParty(resource.data.orderId)
+        && resource.data.senderId != request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['requestStatus'])
+        && resource.data.get('requestStatus', '') == 'pending'
+        && request.resource.data.requestStatus in ['accepted', 'declined'];
+
+      allow delete: if false;
     }
 
     // 廣告投放：首頁未登入也看得到（跟 products 一樣公開可讀），

@@ -73,7 +73,7 @@ import { auth, db } from '@/firebase';
 import { toast } from './toast.js';
 import { isAnyModalOpen, registerModalOpen, registerModalClose } from './modalState.js';
 import { blockUnverifiedForTrade } from './verify.js';
-import { collection, addDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, doc, getDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import SendSuccessAnimation from './SendSuccessAnimation.vue';
 
 // 彈窗掛載＝正在開啟，卸載＝已關閉。App.vue 讀共享計數器來收起底部選單，
@@ -88,6 +88,27 @@ const showSuccess = ref(false);
 const isSending = ref(false);   // 送出中：擋住重複點擊，同時讓按鈕顯示「傳送中...」
 
 const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院', '鳥籠', '感恩學院宿舍'];
+
+// 逾期爽約閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動恢復。
+// 次數由 Cloud Function onOrderExpired 寫入，firestore.rules 的
+// notExpireBanned() 也會擋一次——這裡只是為了給出人看得懂的理由，
+// 少了這段使用者只會拿到一句無來由的 permission-denied。
+const EXPIRE_LIMIT = 3;
+const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+const isExpireBanned = async (uid) => {
+  try {
+    const snap = await getDoc(doc(db, 'users', uid));
+    const data = snap.exists() ? snap.data() : {};
+    const startMs = data.expirePeriodStart?.toMillis?.() ?? null;
+    if (startMs === null || (Date.now() - startMs) > EXPIRE_PERIOD_MS) return false;
+    return (data.expireCount || 0) >= EXPIRE_LIMIT;
+  } catch (e) {
+    // 讀不到就放行：規則層還會再擋一次，不該因為一次讀取失敗就讓人不能交易
+    console.error('[TradeModal] 讀取爽約次數失敗，暫以未達上限處理：', e.code, e.message);
+    return false;
+  }
+};
 
 const tradeInfo = reactive({
   time: '',
@@ -135,6 +156,11 @@ const sendTradeRequest = async () => {
 
   if (!isTimeValid.value) {
     toast("⚠️ 安全提醒：非規定的面交時間（06:00 - 18:00），預約已被系統攔截。");
+    return;
+  }
+
+  if (await isExpireBanned(user.uid)) {
+    toast(`🚫 你在 30 天內已有 ${EXPIRE_LIMIT} 次面交爽約紀錄，暫時無法發起新交易。`);
     return;
   }
 

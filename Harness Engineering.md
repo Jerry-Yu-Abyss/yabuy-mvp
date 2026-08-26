@@ -35,7 +35,7 @@ Agent 是無狀態函數 `f(context) → action`,不記得上次、不能驗證�
 | **F2** | 功能標準(40 項) | [scripts/check-functional.mjs](scripts/check-functional.mjs) | 同上 | ⚠️ 4 自動過,35 待測 |
 | **F3** | 人工驗證帳本 | [scripts/functional-results.json](scripts/functional-results.json) | 人手動 `--pass` | ⚠️ 僅 1 筆,無時效性 |
 | **F4** | 檢查路由 | [package.json](package.json) | 人 / E1 | ✅ 已拆 code/prod |
-| **F5** | 交易流程 × 安全規則(49 項) | [scripts/check-trade-flow.mjs](scripts/check-trade-flow.mjs) | `check:trade`／`check:code`(自動 skip) | ✅ 全過 · 需 emulator |
+| **F5** | 交易流程 × 安全規則(75 項) | [scripts/check-trade-flow.mjs](scripts/check-trade-flow.mjs) | `check:trade`／`check:code`(自動 skip) | ✅ 全過 · 需 emulator |
 | **F6** | Emulator 工具與種子 | [scripts/emulator-helpers.mjs](scripts/emulator-helpers.mjs)、[scripts/seed-emulator.mjs](scripts/seed-emulator.mjs) | `emu:seed` | ✅ |
 | **E1** | Commit 閘門 | [.claude/settings.json](.claude/settings.json) | `git commit` 自動 | ✅ 已實測會擋 |
 | **E2** | 個人權限白名單 | `.claude/settings.local.json` | Claude Code | ⚠️ 未版控、有死路徑 |
@@ -43,7 +43,7 @@ Agent 是無狀態函數 `f(context) → action`,不記得上次、不能驗證�
 | **R1** | Dev server | [.claude/launch.json](.claude/launch.json) | 瀏覽器驗證時 | ✅ :5173 |
 | **R2** | Firebase 設定 | [firebase.json](firebase.json) | 部署 / F1 / F2 | ✅ 已有 emulators 區塊 |
 | **R3** | 正式環境 `yabuy-2026a` | — | F1/F2 網路檢查對象 | ⚠️ 仍是 F1/F2 唯一資料來源 |
-| **R4** | 本機 Emulator | auth 9099 / firestore 8080 / UI 4000 | `npm run emu`(**需 JDK**) | ✅ F5/F6 的執行環境 |
+| **R4** | 本機 Emulator | auth 9099 / firestore 8080 / functions 5001 / UI 4000 | `npm run emu`(**需 JDK**)／`npm run emu:fn`(含 functions) | ✅ F5/F6 的執行環境 |
 | **H2–H4** | 待建組件 | — | — | 📋 見下方規劃 |
 
 ---

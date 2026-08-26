@@ -87,7 +87,10 @@
           <div v-for="order in filteredOrders" :key="order.id" class="order-card-modern">
 
             <div class="card-meta">
-              <span class="status-badge" :class="order.status">{{ statusText(order.status) }}</span>
+              <span
+                class="status-badge"
+                :class="isExpired(order) ? 'expired' : order.status"
+              >{{ isExpired(order) ? statusText('expired') : statusText(order.status) }}</span>
               <div class="meta-right">
                 <span class="time-stamp">{{ formatTime(order.createdAt) }}</span>
                 <button
@@ -194,21 +197,37 @@
 
               <div v-if="order.status === 'accepted'" class="accepted-success-col">
                 <div class="accepted-success-row">
-                  <div class="success-text">🎉 預約成功！</div>
-                  <button class="chat-trigger-btn" type="button" @click.stop="chatOrder = order">💬 傳訊息</button>
+                  <div class="success-text">{{ isExpired(order) ? '⏰ 這筆預約已逾期' : '🎉 預約成功！' }}</div>
+                  <button class="chat-trigger-btn" type="button" @click.stop="chatOrderId = order.id">💬 傳訊息</button>
                 </div>
 
-                <button
-                  class="btn-deal-trigger"
-                  :class="{ locked: !canStartSafeTrade(order) }"
-                  :disabled="!canStartSafeTrade(order)"
-                  @click="goToSafeTrade(order)"
-                >
-                  {{ safeTradeBtnLabel(order) }}
-                </button>
-                <p v-if="!canStartSafeTrade(order)" class="safe-trade-hint">
-                  🔒 約定時間前 10 分鐘（{{ safeTradeOpenText(order) }}）才會開放
-                </p>
+                <!-- 逾期：不再放人進場，只剩結案或用訊息協調新時間 -->
+                <template v-if="isExpired(order)">
+                  <button
+                    class="btn-expire-close"
+                    :disabled="isOrderBusy(order.id)"
+                    @click="expireOrder(order)"
+                  >⏰ 逾期關閉</button>
+                  <p class="safe-trade-hint">
+                    約定時間（{{ order.time }}）已過 30 分鐘，雙方都沒有開始安全交易。
+                    關閉不佔用你的取消額度，爽約會記在沒出現的一方；
+                    還想交易的話，可用💬傳訊息請對方同意推遲時間。
+                  </p>
+                </template>
+
+                <template v-else>
+                  <button
+                    class="btn-deal-trigger"
+                    :class="{ locked: !canStartSafeTrade(order) }"
+                    :disabled="!canStartSafeTrade(order)"
+                    @click="goToSafeTrade(order)"
+                  >
+                    {{ safeTradeBtnLabel(order) }}
+                  </button>
+                  <p v-if="!canStartSafeTrade(order)" class="safe-trade-hint">
+                    🔒 約定時間前 10 分鐘（{{ safeTradeOpenText(order) }}）才會開放
+                  </p>
+                </template>
               </div>
 
               <div v-if="order.status === 'completed'" class="price-summary">
@@ -228,7 +247,7 @@
 
   <Teleport to="body">
     <DealPage v-if="selectedDeal" :order="selectedDeal" :role="activeTab" @close="selectedDeal = null" />
-    <CannedChat v-if="chatOrder" :order="chatOrder" :role="activeTab" @close="chatOrder = null" />
+    <CannedChat v-if="chatOrder" :order="chatOrder" :role="activeTab" @close="chatOrderId = null" />
   </Teleport>
 </template>
 
@@ -394,6 +413,9 @@ const rejectOrder = (order) => runOrderAction(order.id, async () => {
 //          再放一顆 ✕ 會是同功能的重複入口。
 // accepted 涵蓋「交易時間前的等待期」與「交易時間中的面交流程」，兩個時段都能取消。
 const canCancel = (order) => {
+  // 逾期的訂單改走「逾期關閉」（另一組額度），這裡就不再出現取消。
+  // 否則同一張卡片會有兩顆結果一樣、扣的額度卻不同的按鈕。
+  if (isExpired(order)) return false;
   if (order.status === 'accepted') return true;
   return activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
 };
@@ -458,10 +480,21 @@ const cancelOrder = (order) => runOrderAction(order.id, async () => {
   }
 });
 
-const statusText = (s) => ({ pending: '等待中', negotiating: '協商中', accepted: '預約成立', rejected: '已取消', failed: '交易失敗', completed: '✅ 已完成' }[s] || s);
+const statusText = (s) => ({ pending: '等待中', negotiating: '協商中', accepted: '預約成立', rejected: '已取消', failed: '交易失敗', expired: '⏰ 已逾期', completed: '✅ 已完成' }[s] || s);
 const formatTime = (ts) => { if (!ts) return ''; const d = ts.toDate(); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`; };
 const selectedDeal = ref(null);
-const chatOrder = ref(null);
+
+// 聊天室要即時看到 buyerDelayUsed / sellerDelayUsed 與最新的 time（對方同意
+// 推遲後畫面要跟著變），所以不能存訂單物件的快照——toOrder() 每次 onSnapshot
+// 都會重建物件，存下來的參照會永遠停在打開聊天室的那一刻。改存 id，用
+// computed 每次從最新清單裡取。買賣兩份清單都找，同一支帳號自導自演的
+// 合成訂單也能正確命中。
+const chatOrderId = ref(null);
+const chatOrder = computed(() =>
+  chatOrderId.value
+    ? [...buyOrders.value, ...sellOrders.value].find((o) => o.id === chatOrderId.value) || null
+    : null
+);
 
 // ── 安全交易時間閘門：約定時間前 10 分鐘才開放 ──
 // order.time 是不含時區的 "YYYY-MM-DD HH:mm" 字串，用裝置本地時區解析（沿用
@@ -482,8 +515,61 @@ const appointmentMillis = (order) => {
 const canStartSafeTrade = (order) => {
   const t = appointmentMillis(order);
   if (t == null) return false;
+  // 原本只有下界（提前 10 分鐘開放），約定時間過了三天按鈕照樣是開的。
+  // 現在加上界：逾期之後就不再放人進場，改走逾期關閉或推遲協調。
+  if (isExpired(order)) return false;
   return nowTick.value >= t - SAFE_TRADE_WINDOW_MS;
 };
+
+// ── 逾期關閉 ──
+// 約定時間過後 30 分鐘，雙方仍沒有「都按下安全交易」，這筆預約就算破局。
+// 只決定「何時算逾期」。「誰要被記一次」「記幾次就擋」都在伺服器端
+// （functions 的 onOrderExpired 與 firestore.rules 的 notExpireBanned）。
+const EXPIRE_GRACE_MS = 30 * 60 * 1000;
+
+// 「雙方都按過安全交易」＝面交已經開始。之後掃碼、議價、互評都可能拖過
+// 30 分鐘，不能因為時間到就把進行中的交易判成逾期。
+// 只有一方按下不算開始——那正是「對方放鳥」的情境，準時到場的人要能用
+// 逾期關閉結案，而不是被迫去扣自己的取消額度。
+const dealStarted = (order) => !!order.buyerReady && !!order.sellerReady;
+
+const isExpired = (order) => {
+  if (order.status !== 'accepted' || dealStarted(order)) return false;
+  const t = appointmentMillis(order);
+  return t != null && nowTick.value >= t + EXPIRE_GRACE_MS;
+};
+
+// 逾期關閉不再扣按下的人——放鳥的是對方，卻要準時到場的人吐一次額度並不合理。
+// 改由 Cloud Function onOrderExpired 監聽 status 轉成 expired，把爽約記在
+// 「沒按安全交易」的那一方身上（前端寫不了別人的 users 文件，只能放伺服器端）。
+// 這裡因此只寫訂單，不碰任何額度。
+const expireOrder = (order) => runOrderAction(order.id, async () => {
+  const iShowedUp = activeTab.value === 'buy' ? !!order.buyerReady : !!order.sellerReady;
+  const blameNote = iShowedUp
+    ? '你已按過安全交易，這次不會記在你身上。'
+    : '雙方都沒有按下安全交易，兩邊都會各記一次。';
+
+  if (!confirm(
+    `「${order.productName}」的約定時間已過 30 分鐘，雙方都沒有開始安全交易。
+
+` +
+    `確定要以逾期結案嗎？結案後這筆交易會關閉，商品仍保留在賣場。
+
+` +
+    `沒出現的一方會被記一次爽約（30 天內滿 3 次就無法再發起新交易）。${blameNote}`
+  )) return;
+
+  try {
+    await updateDoc(doc(db, 'orders', order.id), {
+      status: 'expired',
+      lastActionBy: activeTab.value === 'buy' ? 'buyer' : 'seller',
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.error('[Mailbox] 逾期關閉失敗：', e.code, e.message);
+    alert('關閉失敗，請重試。');
+  }
+});
 
 const safeTradeOpenText = (order) => {
   const t = appointmentMillis(order);
@@ -619,6 +705,7 @@ onUnmounted(() => {
 .status-badge.pending { background: #fff8e1; color: #f57c00; }
 .status-badge.negotiating { background: #e3f2fd; color: #1976d2; }
 .status-badge.accepted { background: #e8f5e9; color: #2e7d32; }
+.status-badge.expired { background: #fbe9e7; color: #c1440e; }
 .time-stamp { font-size: 11px; color: #bbb; font-weight: 600; }
 
 .prod-info-row { display: flex; gap: 14px; align-items: center; }
@@ -657,11 +744,17 @@ onUnmounted(() => {
 
 .accepted-success-col { display: flex; flex-direction: column; gap: 10px; }
 .accepted-success-row { display: flex; justify-content: space-between; align-items: center; background: #e8f5e9; padding: 12px 16px; border-radius: 18px; }
+.accepted-success-col:has(.btn-expire-close) .accepted-success-row { background: #fbe9e7; }
+.accepted-success-col:has(.btn-expire-close) .success-text { color: #c1440e; }
+.accepted-success-col:has(.btn-expire-close) .chat-trigger-btn { color: #c1440e; border-color: #ffccbc; }
 .success-text { color: #2e7d32; font-weight: 850; font-size: 14px; }
 .chat-trigger-btn { background: #fff; color: #2e7d32; border: 1.5px solid #a5d6a7; padding: 7px 12px; border-radius: 10px; font-weight: 800; font-size: 12px; cursor: pointer; }
 
 .btn-deal-trigger { width: 100%; height: 46px; background: #2e7d32; color: #fff; border: none; border-radius: 14px; font-weight: 850; font-size: 14px; cursor: pointer; }
 .btn-deal-trigger.locked { background: #e0e0e0; color: #999; cursor: not-allowed; }
+.btn-expire-close { width: 100%; height: 46px; background: #fff; color: #c1440e; border: 1.5px solid #ffccbc; border-radius: 14px; font-weight: 850; font-size: 14px; cursor: pointer; }
+.btn-expire-close:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-expire-close:not(:disabled):active { background: #fff3ef; }
 .safe-trade-hint { margin: -4px 0 0; font-size: 11px; color: #999; font-weight: 700; text-align: center; }
 
 .price-summary { margin-top: 10px; font-size: 13px; font-weight: 800; color: #666; text-align: right; }
