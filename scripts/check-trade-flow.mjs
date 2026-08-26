@@ -525,23 +525,33 @@ const eq = (label, actual, expected) =>
   const XID = 'order-expire-1';
   await setDoc(`orders/${XID}`, orderBase, buyer.token);
 
-  expectDenied(
-    'pending 不能直接跳到 expired',
+  // pending / negotiating 也能逾期——「約定時間過了都沒人回應」跟「談成了沒
+  // 出現」是兩種不同的破局，但都該有出口。記在哪個計數器由 Function 決定。
+  expectAllowed(
+    '未獲回應的 pending 可以逾期關閉',
     await updateDoc(`orders/${XID}`, { status: 'expired' }, buyer.token),
-    'statusFlowOk 只允許 accepted → expired。若能從 pending 跳，賣家還沒回覆的訂單就會被單方面判逾期'
+    'statusFlowOk 允許 pending → expired，否則賣家不理會的請求會永遠掛在信箱'
   );
 
-  await updateDoc(`orders/${XID}`, { status: 'accepted' }, seller.token);
+  expectDenied(
+    'expired 之後不能被改回 pending',
+    await updateDoc(`orders/${XID}`, { status: 'pending' }, buyer.token),
+    'expired 是終止態，只剩 next == prev 會過'
+  );
+
+  const XID2 = 'order-expire-2';
+  await setDoc(`orders/${XID2}`, orderBase, buyer.token);
+  await updateDoc(`orders/${XID2}`, { status: 'accepted' }, seller.token);
 
   expectAllowed(
     '逾期關閉：accepted → expired',
-    await updateDoc(`orders/${XID}`, { status: 'expired', lastActionBy: 'buyer' }, buyer.token),
+    await updateDoc(`orders/${XID2}`, { status: 'expired', lastActionBy: 'buyer' }, buyer.token),
     '約定時間過 30 分鐘、雙方都沒開始安全交易時，任一方都要能結案'
   );
 
   expectDenied(
     'expired 是終止態，不可被改回 accepted',
-    await updateDoc(`orders/${XID}`, { status: 'accepted' }, buyer.token),
+    await updateDoc(`orders/${XID2}`, { status: 'accepted' }, buyer.token),
     'statusFlowOk 對終止態只允許 next == prev，否則逾期結案可被反覆翻案'
   );
 
@@ -670,6 +680,12 @@ const eq = (label, actual, expected) =>
   );
 
   expectDenied(
+    '使用者不可自行竄改 noReplyCount',
+    await updateDoc(`users/${buyer.uid}`, { noReplyCount: 0 }, buyer.token),
+    '未回應計數與爽約計數一樣只有 Cloud Function 寫得動'
+  );
+
+  expectDenied(
     '沒有 users 文件的人不可自建一份乾淨的紀錄',
     await setDoc(
       `users/${third.uid}`,
@@ -701,6 +717,31 @@ const eq = (label, actual, expected) =>
     '爽約滿 3 次後不可發起新交易',
     await setDoc('orders/order-strike-ban', orderBase, buyer.token),
     'orders.create 的 notExpireBanned()。只擋前端的話，繞過 TradeModal 直接打 REST 就能繼續建單'
+  );
+
+  // 未回應是另一組額度：爽約歸零之後，光靠未回應也要能擋住
+  await setDoc(
+    `users/${buyer.uid}`,
+    { expireCount: 0, expirePeriodStart: new Date(), noReplyCount: 3, noReplyPeriodStart: new Date() },
+    OWNER
+  );
+  expectDenied(
+    '未回應滿 3 次後同樣不可發起新交易',
+    await setDoc('orders/order-noreply-ban', orderBase, buyer.token),
+    'notExpireBanned 要同時看兩組計數，只看 expireCount 的話未回應那條形同虛設'
+  );
+
+  expectAllowed(
+    '兩組計數各自獨立：未回應 2 次不受爽約 2 次影響',
+    await (async () => {
+      await setDoc(
+        `users/${buyer.uid}`,
+        { expireCount: 2, expirePeriodStart: new Date(), noReplyCount: 2, noReplyPeriodStart: new Date() },
+        OWNER
+      );
+      return setDoc('orders/order-strike-split', orderBase, buyer.token);
+    })(),
+    '兩組各給 3 次容忍，2 + 2 不該被加總成 4 而擋下'
   );
 
   // 週期過完自動恢復：把起算點撥到 31 天前
@@ -793,6 +834,59 @@ const eq = (label, actual, expected) =>
     }
     eq('雙方都沒出現時買家也被記一次', bothBuyer, 1);
     eq('雙方都沒出現時賣家累加到 2', await readCount(seller.uid), 2);
+
+    /* ── 未回應（pending / negotiating 逾期）記在另一組計數 ── */
+    const readNoReply = async (uid) => {
+      const r = await getDoc(`users/${uid}`, OWNER2);
+      return r.data?.noReplyCount ?? null;
+    };
+
+    // createdAt 造在 13 小時前，越過 NO_REPLY_MIN_AGE_MS 的 12 小時下限
+    const oldCreated = new Date(Date.now() - 13 * 60 * 60 * 1000);
+
+    // pending 沒人回 → 記賣家，不記買家
+    const RID = 'order-noreply-pending';
+    await setDoc(`orders/${RID}`, { ...orderBase, createdAt: oldCreated }, buyer.token);
+    await updateDoc(`orders/${RID}`, { status: 'expired' }, buyer.token);
+
+    let sellerNoReply = null;
+    for (let i = 0; i < 30; i++) {
+      sellerNoReply = await readNoReply(seller.uid);
+      if (sellerNoReply === 1) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+
+    eq('pending 逾期 → 記賣家未回應', sellerNoReply, 1);
+    eq('pending 逾期 → 不記發起的買家', await readNoReply(buyer.uid), null);
+    eq('未回應不會汙染爽約計數', await readCount(seller.uid), 2);
+
+    // negotiating：最後動作者是賣家 → 沒回的是買家
+    const RID2 = 'order-noreply-nego';
+    await setDoc(`orders/${RID2}`, { ...orderBase, createdAt: oldCreated }, buyer.token);
+    await updateDoc(
+      `orders/${RID2}`,
+      { status: 'negotiating', negotiationStep: 1, lastActionBy: 'seller' },
+      seller.token
+    );
+    await updateDoc(`orders/${RID2}`, { status: 'expired' }, seller.token);
+
+    let buyerNoReply = null;
+    for (let i = 0; i < 30; i++) {
+      buyerNoReply = await readNoReply(buyer.uid);
+      if (buyerNoReply === 1) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    eq('negotiating 逾期 → 記「不是最後動作者」的那一方', buyerNoReply, 1);
+
+    // 12 小時下限：剛送出就逾期的訂單，誰也不記
+    // （否則買家把面交時間填在半小時後，連送三筆再自己關掉，就能刷爆賣家）
+    const RID3 = 'order-noreply-fresh';
+    await setDoc(`orders/${RID3}`, { ...orderBase, createdAt: new Date() }, buyer.token);
+    await updateDoc(`orders/${RID3}`, { status: 'expired' }, buyer.token);
+    await new Promise((r) => setTimeout(r, 3000));
+
+    eq('訂單成立不滿 12 小時就逾期 → 不記給任何人', await readNoReply(seller.uid), 1);
   }
 
   /* ── 總結 ──────────────────────────────────────────────────── */

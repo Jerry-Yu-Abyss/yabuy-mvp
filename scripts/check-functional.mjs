@@ -321,12 +321,23 @@ const CASES = [
   {
     id: 'C-16',
     area: 'C. 交易邏輯',
-    title: '逾期 30 分鐘後改走逾期關閉',
+    title: '逾期 30 分鐘後改走逾期關閉（accepted）',
     expect:
       '約定時間過 30 分鐘且雙方未都按安全交易 → 徽章變「⏰ 已逾期」、安全交易按鈕消失、' +
       '出現「逾期關閉」且取消 ✕ 不再顯示；按下後 status=expired，按的人不扣任何額度，' +
       '爽約記在「沒按安全交易」的一方（onOrderExpired 寫 expireCount，兩邊都沒按時各記一次）；' +
       '滿 3 次的人發起新交易會被擋；雙方都已按過安全交易的訂單不會被判逾期',
+    runner: RUNNER.DUO,
+  },
+  {
+    id: 'C-18',
+    area: 'C. 交易邏輯',
+    title: '未獲回應的請求也會逾期（pending / negotiating）',
+    expect:
+      '約定時間過 30 分鐘仍停在 pending / negotiating → 婉拒／接受／更改提案整組消失，' +
+      '換成「⏰ 逾期關閉」；按下後 status=expired，沒回應的一方被記 noReplyCount' +
+      '（pending 記賣家；negotiating 記「不是 lastActionBy」的一方），與 expireCount 分開計數；' +
+      '訂單成立不滿 12 小時就逾期的話誰也不記',
     runner: RUNNER.DUO,
   },
   {
@@ -544,6 +555,7 @@ function checkBusinessConstants() {
     ['爽約上限 3 次（前端提示）', 'src/components/TradeModal.vue', /EXPIRE_LIMIT = 3/],
     ['爽約週期 30 天（規則層）', 'firestore.rules', /duration\.value\(30, 'd'\)/],
     ['爽約週期 30 天（Function）', 'functions/src/index.ts', /EXPIRE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],
+    ['未回應記次下限 12 小時', 'functions/src/index.ts', /NO_REPLY_MIN_AGE_MS = 12 \* 60 \* 60 \* 1000/],
     ['推遲上限 24 小時', 'src/components/CannedChat.vue', /MAX_DELAY_MS = 24 \* 60 \* 60 \* 1000/],
   ];
   const bad = [];

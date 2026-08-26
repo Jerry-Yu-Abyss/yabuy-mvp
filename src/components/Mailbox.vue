@@ -133,7 +133,28 @@
             </div>
 
             <div class="card-actions">
-              <template v-if="activeTab === 'sell'">
+              <!-- 約定時間過了卻還沒談成：原本的婉拒／接受／改提案都沒有意義了，
+                   整組換成逾期關閉，免得使用者對著一個過期的時段按「接受」 -->
+              <div
+                v-if="isExpired(order) && order.status !== 'accepted'"
+                class="accepted-success-col"
+              >
+                <div class="accepted-success-row">
+                  <div class="success-text">⏰ 這筆請求已逾期</div>
+                </div>
+                <button
+                  class="btn-expire-close"
+                  :disabled="isOrderBusy(order.id)"
+                  @click="expireOrder(order)"
+                >⏰ 逾期關閉</button>
+                <p class="safe-trade-hint">
+                  約定時間（{{ order.time }}）已過 30 分鐘，
+                  {{ order.status === 'pending' ? '這筆請求一直沒有得到回應' : '協商到一半就沒有下文了' }}。
+                  關閉不佔用你的取消額度；還想交易的話，回商品頁重新發起就好。
+                </p>
+              </div>
+
+              <template v-if="activeTab === 'sell' && !isExpired(order)">
                 <div v-if="order.status === 'pending'" class="btn-group">
                   <button class="btn-secondary" :disabled="isOrderBusy(order.id)" @click="rejectOrder(order)">婉拒</button>
                   <button class="btn-outline" :disabled="isOrderBusy(order.id)" @click="startNegotiate(order)">更改提案</button>
@@ -153,7 +174,7 @@
                 </div>
               </template>
 
-              <template v-if="activeTab === 'buy'">
+              <template v-if="activeTab === 'buy' && !isExpired(order)">
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'seller'" class="btn-group-column">
                   <div class="info-bubble seller-offer">賣家提議了新時間地點</div>
                   <div class="btn-group">
@@ -533,30 +554,44 @@ const EXPIRE_GRACE_MS = 30 * 60 * 1000;
 // 逾期關閉結案，而不是被迫去扣自己的取消額度。
 const dealStarted = (order) => !!order.buyerReady && !!order.sellerReady;
 
+// 逾期的共同判準是「約定的那個時段過完了，這筆交易卻還沒走到該走的地方」，
+// 只是「該走到哪」隨狀態不同：
+//   accepted            雙方談成了卻沒都到場（都到場就是面交已開始，不算逾期）
+//   pending/negotiating 根本沒談成——賣家沒回、或協商到一半沒人接話
 const isExpired = (order) => {
-  if (order.status !== 'accepted' || dealStarted(order)) return false;
   const t = appointmentMillis(order);
-  return t != null && nowTick.value >= t + EXPIRE_GRACE_MS;
+  if (t == null || nowTick.value < t + EXPIRE_GRACE_MS) return false;
+  if (order.status === 'accepted') return !dealStarted(order);
+  return order.status === 'pending' || order.status === 'negotiating';
 };
 
 // 逾期關閉不再扣按下的人——放鳥的是對方，卻要準時到場的人吐一次額度並不合理。
-// 改由 Cloud Function onOrderExpired 監聽 status 轉成 expired，把爽約記在
-// 「沒按安全交易」的那一方身上（前端寫不了別人的 users 文件，只能放伺服器端）。
+// 改由 Cloud Function onOrderExpired 監聽 status 轉成 expired，把紀錄記在該回應
+// 卻沒回應的那一方身上（前端寫不了別人的 users 文件，只能放伺服器端）。
 // 這裡因此只寫訂單，不碰任何額度。
 const expireOrder = (order) => runOrderAction(order.id, async () => {
-  const iShowedUp = activeTab.value === 'buy' ? !!order.buyerReady : !!order.sellerReady;
-  const blameNote = iShowedUp
-    ? '你已按過安全交易，這次不會記在你身上。'
-    : '雙方都沒有按下安全交易，兩邊都會各記一次。';
+  let reason;
+  let blame;
+  if (order.status === 'accepted') {
+    const iShowedUp = activeTab.value === 'buy' ? !!order.buyerReady : !!order.sellerReady;
+    reason = '雙方都沒有開始安全交易';
+    blame = '沒出現的一方會被記一次爽約。' + (iShowedUp
+      ? '你已按過安全交易，這次不會記在你身上。'
+      : '雙方都沒有按下安全交易，兩邊都會各記一次。');
+  } else {
+    reason = order.status === 'pending' ? '賣家一直沒有回應' : '協商到一半沒有人回應';
+    blame = '沒回應的一方會被記一次未回應紀錄（與爽約分開計算）。' +
+      '訂單成立不滿 12 小時的話不會記給任何人。';
+  }
 
   if (!confirm(
-    `「${order.productName}」的約定時間已過 30 分鐘，雙方都沒有開始安全交易。
+    `「${order.productName}」的約定時間已過 30 分鐘，${reason}。
 
 ` +
     `確定要以逾期結案嗎？結案後這筆交易會關閉，商品仍保留在賣場。
 
 ` +
-    `沒出現的一方會被記一次爽約（30 天內滿 3 次就無法再發起新交易）。${blameNote}`
+    `${blame}（30 天內滿 3 次就無法再發起新交易。）`
   )) return;
 
   try {

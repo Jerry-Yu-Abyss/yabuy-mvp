@@ -96,17 +96,26 @@ const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院
 const EXPIRE_LIMIT = 3;
 const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
-const isExpireBanned = async (uid) => {
+// 兩種紀錄分開計數、各自 3 次，踩到任一條都擋。回傳擋下的理由，null 表示放行。
+const OFFENCES = [
+  { count: 'expireCount', start: 'expirePeriodStart', label: '面交爽約' },
+  { count: 'noReplyCount', start: 'noReplyPeriodStart', label: '未回應交易請求' }
+];
+
+const expireBanReason = async (uid) => {
   try {
     const snap = await getDoc(doc(db, 'users', uid));
     const data = snap.exists() ? snap.data() : {};
-    const startMs = data.expirePeriodStart?.toMillis?.() ?? null;
-    if (startMs === null || (Date.now() - startMs) > EXPIRE_PERIOD_MS) return false;
-    return (data.expireCount || 0) >= EXPIRE_LIMIT;
+    for (const o of OFFENCES) {
+      const startMs = data[o.start]?.toMillis?.() ?? null;
+      if (startMs === null || (Date.now() - startMs) > EXPIRE_PERIOD_MS) continue;
+      if ((data[o.count] || 0) >= EXPIRE_LIMIT) return o.label;
+    }
+    return null;
   } catch (e) {
     // 讀不到就放行：規則層還會再擋一次，不該因為一次讀取失敗就讓人不能交易
-    console.error('[TradeModal] 讀取爽約次數失敗，暫以未達上限處理：', e.code, e.message);
-    return false;
+    console.error('[TradeModal] 讀取逾期紀錄失敗，暫以未達上限處理：', e.code, e.message);
+    return null;
   }
 };
 
@@ -159,8 +168,9 @@ const sendTradeRequest = async () => {
     return;
   }
 
-  if (await isExpireBanned(user.uid)) {
-    toast(`🚫 你在 30 天內已有 ${EXPIRE_LIMIT} 次面交爽約紀錄，暫時無法發起新交易。`);
+  const banReason = await expireBanReason(user.uid);
+  if (banReason) {
+    toast(`🚫 你在 30 天內已有 ${EXPIRE_LIMIT} 次${banReason}紀錄，暫時無法發起新交易。`);
     return;
   }
 

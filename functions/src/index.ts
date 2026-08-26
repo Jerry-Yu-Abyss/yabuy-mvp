@@ -354,17 +354,27 @@ export const onReviewCreated = onDocumentCreated(
   }
 );
 
-// ── 逾期爽約紀錄 ──────────────────────────────────────────────────
-// 訂單被判逾期關閉時，記一次爽約給「沒出現的那一方」。
+// ── 逾期紀錄 ──────────────────────────────────────────────────────
+// 訂單被判逾期關閉時，記一次給「該回應卻沒回應的那一方」。
 //
 // 為什麼非得放伺服器端：前端寫不了別人的 users 文件（規則只允許本人改自己
-// 的），而這裡要扣的正是對方的次數。連帶地，expireCount / expirePeriodStart
-// 已經被列進 users.update 的不可竄改清單——只有這支 trigger 用 Admin SDK
-// 寫得動，否則被記次的人只要把數字改回 0 就能繞過發起交易的閘門。
+// 的），而這裡要扣的正是對方的次數。連帶地，四個計數欄位都被列進 users 的
+// update／create 不可竄改清單——只有這支 trigger 用 Admin SDK 寫得動，否則
+// 被記次的人只要把數字改回 0 就能繞過發起交易的閘門。
 //
-// 「沒出現」＝沒按下安全交易（buyerReady / sellerReady）。逾期的定義本身就是
-// 「雙方沒有都按下」，所以這裡至少會抓到一個人；兩個都沒按時兩個都算。
+// 分成兩組計數，因為兩件事的嚴重性不同，各給 3 次容忍：
+//   expireCount  約好了卻沒出現。判準是沒按下安全交易（buyerReady /
+//                sellerReady）；逾期的定義本身就是「雙方沒有都按下」，
+//                所以至少會抓到一個人，兩個都沒按時兩個都算。
+//   noReplyCount 收到請求後從頭到尾沒回應。pending 是賣家沒回；
+//                negotiating 是「不是最後動作者」的那一方沒回。
 const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+// 未回應要記次，訂單至少得存在這麼久——買家可以把面交時間填在半小時後，
+// 賣家根本來不及看到就逾期了。沒有這道下限，惡意買家連送三筆「馬上就要」
+// 的請求再自己關掉，就能把一個賣家刷到禁止發起交易。
+// 「沒出現」不設這道門檻：那是雙方都同意過時間之後的失約，與前置時間無關。
+const NO_REPLY_MIN_AGE_MS = 12 * 60 * 60 * 1000;
 
 export const onOrderExpired = onDocumentUpdated(
   "orders/{orderId}",
@@ -372,16 +382,44 @@ export const onOrderExpired = onDocumentUpdated(
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!before || !after) return;
-    // 只在「這一次更新把它變成 expired」時記次，避免同一筆訂單被重複計算
+    // 只在「這一次更新把它變成 expired」時記次，避免同一筆訂單重複計算
     if (before.status === "expired" || after.status !== "expired") return;
 
+    const buyerId = typeof after.buyerId === "string" ? after.buyerId : null;
+    const sellerId = typeof after.sellerId === "string" ? after.sellerId : null;
+
+    // 記在哪個欄位、記給誰，取決於「逾期前它停在哪一個狀態」
+    let field: "expireCount" | "noReplyCount";
+    let periodField: "expirePeriodStart" | "noReplyPeriodStart";
     const offenders: string[] = [];
-    if (after.buyerReady !== true && typeof after.buyerId === "string") {
-      offenders.push(after.buyerId);
+
+    if (before.status === "accepted") {
+      field = "expireCount";
+      periodField = "expirePeriodStart";
+      if (after.buyerReady !== true && buyerId) offenders.push(buyerId);
+      if (after.sellerReady !== true && sellerId) offenders.push(sellerId);
+    } else if (before.status === "pending" || before.status === "negotiating") {
+      field = "noReplyCount";
+      periodField = "noReplyPeriodStart";
+
+      const createdMs = after.createdAt?.toMillis?.() ?? null;
+      if (createdMs !== null && Date.now() - createdMs < NO_REPLY_MIN_AGE_MS) {
+        console.log("訂單存在不滿 12 小時，不記未回應", event.params.orderId);
+        return;
+      }
+
+      if (before.status === "pending") {
+        // 買家發起、賣家從未回應
+        if (sellerId) offenders.push(sellerId);
+      } else {
+        // 協商中：最後動作者已經表態了，沒回的是另一邊
+        const waitingOn = after.lastActionBy === "buyer" ? sellerId : buyerId;
+        if (waitingOn) offenders.push(waitingOn);
+      }
+    } else {
+      return;
     }
-    if (after.sellerReady !== true && typeof after.sellerId === "string") {
-      offenders.push(after.sellerId);
-    }
+
     if (offenders.length === 0) return;
 
     const db = admin.firestore();
@@ -392,19 +430,19 @@ export const onOrderExpired = onDocumentUpdated(
         const ref = db.collection("users").doc(uid);
         const snap = await tx.get(ref);
         const data = snap.data() || {};
-        const startMs = data.expirePeriodStart?.toMillis?.() ?? null;
+        const startMs = data[periodField]?.toMillis?.() ?? null;
         const periodOver =
           startMs === null || Date.now() - startMs > EXPIRE_PERIOD_MS;
 
         tx.set(ref, periodOver ? {
-          expireCount: 1,
-          expirePeriodStart: FieldValue.serverTimestamp(),
+          [field]: 1,
+          [periodField]: FieldValue.serverTimestamp(),
         } : {
-          expireCount: FieldValue.increment(1),
+          [field]: FieldValue.increment(1),
         }, {merge: true});
       })
     ));
 
-    console.log("逾期記次", event.params.orderId, offenders);
+    console.log("逾期記次", event.params.orderId, field, offenders);
   }
 );

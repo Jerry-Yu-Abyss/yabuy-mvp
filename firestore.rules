@@ -32,7 +32,8 @@ service cloud.firestore {
       // expireCount: 0 的文件，等於憑空清掉紀錄。update 那條擋得住既有文件，
       // 擋不住「先建一份乾淨的」這條路。
       allow create: if request.auth != null && request.auth.uid == uid
-        && !request.resource.data.keys().hasAny(['expireCount', 'expirePeriodStart']);
+        && !request.resource.data.keys().hasAny(['expireCount', 'expirePeriodStart',
+                                                 'noReplyCount', 'noReplyPeriodStart']);
 
       // 更新規則：兩種情況之一才允許
       //
@@ -48,7 +49,8 @@ service cloud.firestore {
           request.auth.uid == uid
           && !request.resource.data.diff(resource.data).affectedKeys()
                 .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount',
-                         'expireCount', 'expirePeriodStart'])
+                         'expireCount', 'expirePeriodStart',
+                         'noReplyCount', 'noReplyPeriodStart'])
         )
         // (2) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
         || (
@@ -85,9 +87,15 @@ service cloud.firestore {
       function notExpireBanned() {
         let path = /databases/$(database)/documents/users/$(request.auth.uid);
         let u = exists(path) ? get(path).data : {};
-        let start = u.get('expirePeriodStart', timestamp.date(2000, 1, 1));
+        let expStart = u.get('expirePeriodStart', timestamp.date(2000, 1, 1));
+        let repStart = u.get('noReplyPeriodStart', timestamp.date(2000, 1, 1));
+        // 兩種爽約分開計數、各自 3 次，但踩到任一條的後果一樣：暫時不能發起新交易。
+        //   expireCount  —— 約好了卻沒出現（accepted 逾期）
+        //   noReplyCount —— 收到請求後從頭到尾沒回應（pending / negotiating 逾期）
         return !(u.get('expireCount', 0) >= 3
-                 && request.time < start + duration.value(30, 'd'));
+                 && request.time < expStart + duration.value(30, 'd'))
+            && !(u.get('noReplyCount', 0) >= 3
+                 && request.time < repStart + duration.value(30, 'd'));
       }
 
       // 這筆訂單的當事人（買家或賣家）
@@ -155,9 +163,10 @@ service cloud.firestore {
         let next = request.resource.data.get('status', prev);
         return next == prev
             // 改提案／接受／婉拒／取消：pending 與 negotiating 階段雙方都能操作
+            // 改提案／接受／婉拒／取消，或「約定時間過了都沒人回應」的逾期
             || ((prev == 'pending' || prev == 'negotiating')
                 && (next == 'negotiating' || next == 'accepted'
-                    || next == 'rejected'))
+                    || next == 'rejected' || next == 'expired'))
             // 面交中：任一方都能取消或判定失敗，或以「逾期」結案。
             // expired 的 30 分鐘判定在 Mailbox.vue，規則層算不出來——orders.time
             // 是不含時區的 "YYYY-MM-DD HH:mm" 字串（見 docs/wiki/新交易流程規格.md
