@@ -119,6 +119,22 @@
           </button>
         </div>
 
+        <!-- 📷 交易點掃碼驗證開關：沒有實體 QR 的環境要能把面交流程跑到底 -->
+        <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !enforceQrScan }">
+          <div class="claim-text">
+            <strong>📷 交易點掃碼驗證</strong>
+            <span>{{ enforceQrScan ? '✅ 生效中：面交需雙方掃描交易點 QR' : '🧪 已關閉：面交跳過掃碼，直接進入金額確認' }}</span>
+          </div>
+          <button
+            class="btn-claim"
+            :class="{ 'btn-danger-toggle': enforceQrScan }"
+            :disabled="qrToggleLoading"
+            @click="toggleQrScan"
+          >
+            {{ qrToggleLoading ? '處理中...' : (enforceQrScan ? '暫時關閉' : '重新開啟') }}
+          </button>
+        </div>
+
         <div v-if="loadingUsers" class="state-hint">
           <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
           <p>載入使用者名單中...</p>
@@ -482,7 +498,11 @@ import { toast, confirmDialog } from './toast.js';
 import { collection, query, where, onSnapshot, orderBy, deleteDoc, doc, addDoc, serverTimestamp, getDocs, updateDoc } from 'firebase/firestore';
 import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Indicate from './Indicate.vue';
-import { enforceSafeHours, setEnforceSafeHours, subscribeTradeSettings } from './tradeSettings.js';
+import {
+  enforceSafeHours, setEnforceSafeHours,
+  enforceQrScan, setEnforceQrScan,
+  subscribeTradeSettings
+} from './tradeSettings.js';
 
 const emit = defineEmits(['back']);
 const currentTab = ref('patrol');
@@ -765,6 +785,42 @@ const toggleSafeHours = async () => {
     toast('❌ 切換失敗，請重試。');
   } finally {
     hoursToggleLoading.value = false;
+  }
+};
+
+// 掃碼驗證開關。掃碼那一站的程式碼完整保留，關掉只是讓流程繞過它——
+// 沒有實體 QR 的環境（開發機、還沒貼上 QR 的交易點）才跑得完整條面交流程。
+// 關閉期間完成畫面不會再顯示「實際地點／實際時間」：那兩筆本來就是掃碼的
+// 產物，沒掃就沒有紀錄，印一個「—」比不印更容易讓人誤會有查證過。
+const qrToggleLoading = ref(false);
+
+const toggleQrScan = async () => {
+  const turningOff = enforceQrScan.value;
+  const ok = await confirmDialog(
+    turningOff
+      ? '確定要暫時關閉交易點掃碼驗證嗎？\n\n關閉期間「所有使用者」的面交流程都會跳過掃碼，' +
+        '直接從安全交易進到金額確認，系統也不會留下實際交易地點與時間的紀錄。測試完請記得重新開啟。'
+      : '確定要重新開啟交易點掃碼驗證嗎？'
+  );
+  if (!ok) return;
+
+  qrToggleLoading.value = true;
+  try {
+    await setEnforceQrScan(!turningOff, auth.currentUser?.uid);
+    await writeAuditLog(
+      'security',
+      turningOff ? '🧪 交易點掃碼驗證已關閉' : '🔒 交易點掃碼驗證已重新開啟',
+      turningOff
+        ? '管理員暫時關閉交易點掃碼驗證，關閉期間所有面交流程跳過掃碼，不會留存實際交易地點與時間。'
+        : '管理員重新開啟交易點掃碼驗證。',
+      { level: turningOff ? 'warning' : 'normal' }
+    );
+    toast.success(turningOff ? '🧪 已關閉掃碼驗證' : '🔒 已重新開啟掃碼驗證');
+  } catch (e) {
+    console.error('[Admin] 切換掃碼驗證失敗：', e.code, e.message);
+    toast('❌ 切換失敗，請重試。');
+  } finally {
+    qrToggleLoading.value = false;
   }
 };
 

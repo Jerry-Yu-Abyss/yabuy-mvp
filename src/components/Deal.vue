@@ -170,8 +170,11 @@
       </div>
 
       <div class="done-actual-box">
-        <div class="done-actual-row"><span>📍 實際地點</span><span>{{ actualLocationName }}</span></div>
-        <div class="done-actual-row"><span>⏰ 實際時間</span><span>{{ actualTimeText }}</span></div>
+        <template v-if="hasScanRecord">
+          <div class="done-actual-row"><span>📍 實際地點</span><span>{{ actualLocationName }}</span></div>
+          <div class="done-actual-row"><span>⏰ 實際時間</span><span>{{ actualTimeText }}</span></div>
+        </template>
+        <div v-else class="done-actual-row"><span>📍 交易地點</span><span>{{ liveOrder.location }}</span></div>
         <div class="done-actual-row price"><span>💰 實際金額</span><span>${{ liveOrder.finalPrice }}</span></div>
       </div>
 
@@ -208,11 +211,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import jsQR from 'jsqr';       // 掃描 QR（純 JS，iOS 也支援）：npm install jsqr
 import { db, auth } from '@/firebase';
 import { doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { codeForLocationName, nameForLocationCode } from './TradePoints.js';
+import { enforceQrScan, subscribeTradeSettings } from './tradeSettings.js';
 import DealTimeline from './DealTimeline.vue';
 
 const props = defineProps({
@@ -318,6 +322,12 @@ const expectedCode = computed(() => codeForLocationName(liveOrder.value.location
 const actualLocationName = computed(() =>
   nameForLocationCode(liveOrder.value.actualLocationCode) || liveOrder.value.location
 );
+// 掃碼被關掉時這兩個時間戳不會存在，完成畫面就不該還印「實際時間 —」——
+// 那是「沒有紀錄」，不是「紀錄是空的」。
+const hasScanRecord = computed(() =>
+  !!liveOrder.value.buyerScannedAt || !!liveOrder.value.sellerScannedAt
+);
+
 const actualTimeText = computed(() => {
   const b = liveOrder.value.buyerScannedAt?.toDate?.();
   const s = liveOrder.value.sellerScannedAt?.toDate?.();
@@ -334,6 +344,16 @@ onMounted(() => {
     return;
   }
   log('📦 初始 order 狀態：', peek(liveOrder.value));
+
+  // 設定是非同步載進來的：第一次 syncStep 很可能在設定到達之前就跑完了，
+  // 而 step 是 ref 不是 computed，不會自己重算——畫面會卡在掃碼站，時間軸
+  // 卻已經少了一站（實測踩到過）。開關本身也可能在面交進行中被切換。
+  // 兩種情況都靠這個 watch 重新推導一次。
+  watch(enforceQrScan, () => {
+    log('⚙️ 掃碼開關變動 → 重新推導步驟', { enforceQrScan: enforceQrScan.value });
+    if (liveOrder.value?.id || props.order?.id) syncStep();
+  });
+  subscribeTradeSettings();
 
   unsubOrder = onSnapshot(doc(db, "orders", props.order.id), (snap) => {
     if (!snap.exists()) {
@@ -372,19 +392,29 @@ const syncStep = () => {
     return;
   }
 
-  const bothScanned = !!o.buyerScannedAt && !!o.sellerScannedAt;
-  if (bothScanned) {
+  const bothReady = !!o.buyerReady && !!o.sellerReady;
+
+  // 管理員關掉掃碼驗證時，這一站整站跳過——程式碼完整保留，只是不經過。
+  // 用 || 而不是改寫掃碼的判斷：已經掃過碼的訂單即使中途被關掉開關，也還是
+  // 走同一條分支，不會因為設定變動而倒退回掃碼畫面。
+  //
+  // ⚠️ 這裡一定要跟 bothReady 綁在一起。掃碼開關關掉時這個值恆為 true，
+  // 若像原本那樣獨立成一條先判斷的分支，任何一方只要打開 Deal 就會直接跳到
+  // 金額，連「按下安全交易」那一站都被略過。
+  const scanCleared = (!!o.buyerScannedAt && !!o.sellerScannedAt) || !enforceQrScan.value;
+
+  if (bothReady && scanCleared) {
     if (props.role === 'sell' && o.finalPrice) {
-      log('  💰 分支[已掃碼, 金額已送出] → step=seller-confirm-price');
+      log('  💰 分支[可進入金額, 金額已送出] → step=seller-confirm-price');
       step.value = 'seller-confirm-price';
     } else {
-      log('  💰 分支[已掃碼] → step=price');
+      log('  💰 分支[可進入金額] → step=price');
       step.value = 'price';
     }
     return;
   }
 
-  if (o.buyerReady && o.sellerReady) {
+  if (bothReady) {
     log('  📷 分支[雙方已按安全交易] → step=scan');
     step.value = 'scan';
     return;

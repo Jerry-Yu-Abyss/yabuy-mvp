@@ -1,9 +1,12 @@
 // tradeSettings.js
-// 平台層級的交易設定，目前只有一項：交易時段限制（06:00–18:00）要不要強制。
+// 平台層級的交易設定，目前有兩項開關：
+//   enforceSafeHours 交易時段限制（06:00–18:00）要不要強制
+//   enforceQrScan    面交流程要不要經過「掃描交易點 QR」那一站
 //
-// 為什麼要有這個開關：那條限制是「安全時段」的產品規則，但驗證逾期、推遲、
-// 面交流程時常常需要在晚上造資料，被時段限制擋住就只能改程式碼再部署一次。
-// 開關做成 Firestore 的一份文件，管理端可以即時切換，不必動到程式碼。
+// 為什麼要有這些開關：它們都是產品層的安全規則，但驗證逾期、推遲、面交流程
+// 時常常需要在晚上造資料、或在沒有實體 QR 的環境把面交跑到底，被規則擋住就
+// 只能改程式碼再部署一次。開關做成 Firestore 的一份文件，管理端可以即時切換，
+// 不必動到程式碼——掃碼那一站的程式碼完整保留，只是可以繞過。
 //
 // 單一事實來源：TradeModal.vue（發起交易）與 CannedChat.vue（推遲提議）都走
 // 這裡的 isTradeHourAllowed()，避免兩邊各寫一份 hour >= 6 而改了一邊漏一邊。
@@ -24,6 +27,7 @@ export const SETTINGS_DOC = 'trade';
 // 文件不存在、監聽斷線）時一律當作「限制生效」。失敗方向要保守——寧可擋住
 // 一筆合法交易讓人回報，也不要靜默把整條安全時段規則放掉。
 export const enforceSafeHours = ref(true);
+export const enforceQrScan = ref(true);
 
 let unsubscribe = null;
 
@@ -37,13 +41,14 @@ export const subscribeTradeSettings = () => {
     doc(db, 'settings', SETTINGS_DOC),
     (snap) => {
       // 只有明確存成 false 才算關閉；欄位缺漏一律當作限制生效
-      enforceSafeHours.value = snap.exists()
-        ? snap.data().enforceSafeHours !== false
-        : true;
+      const d = snap.exists() ? snap.data() : {};
+      enforceSafeHours.value = d.enforceSafeHours !== false;
+      enforceQrScan.value = d.enforceQrScan !== false;
     },
     (err) => {
       console.error('[tradeSettings] 讀取設定失敗，維持限制開啟：', err.code, err.message);
       enforceSafeHours.value = true;
+      enforceQrScan.value = true;
     }
   );
   return unsubscribe;
@@ -58,13 +63,19 @@ export const isTradeHourAllowed = (hour) =>
   !enforceSafeHours.value || isWithinSafeHours(hour);
 
 /** 管理端切換。規則層限定只有管理員寫得動 settings。 */
-export const setEnforceSafeHours = (on, uid) =>
+const writeSetting = (field, on, uid) =>
   setDoc(
     doc(db, 'settings', SETTINGS_DOC),
     {
-      enforceSafeHours: !!on,
+      [field]: !!on,
       updatedAt: serverTimestamp(),
       updatedBy: uid || null
     },
     { merge: true }
   );
+
+export const setEnforceSafeHours = (on, uid) =>
+  writeSetting('enforceSafeHours', on, uid);
+
+export const setEnforceQrScan = (on, uid) =>
+  writeSetting('enforceQrScan', on, uid);

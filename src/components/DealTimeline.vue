@@ -12,26 +12,25 @@
 
 <script setup>
 import { computed } from 'vue';
+import { enforceQrScan } from './tradeSettings.js';
 
 const props = defineProps({ step: { type: String, required: true } });
 
-const stages = [
+// 管理員關掉掃碼驗證時，流程真的少一站，時間軸就不該再畫出一個永遠走不到的
+// 圓點——使用者會以為自己漏了一步。
+const stages = computed(() => [
   { key: 'safe',  label: '安全交易' },
-  { key: 'scan',  label: '掃碼確認' },
+  ...(enforceQrScan.value ? [{ key: 'scan', label: '掃碼確認' }] : []),
   { key: 'price', label: '確認金額' },
   { key: 'done',  label: '完成' }
-];
+]);
 
-// 'seller-confirm-price' 跟 'price' 是同一個「確認金額」階段的一體兩面（買家輸入／賣家確認）
-const STEP_TO_INDEX = {
-  'safe-wait': 0,
-  'scan': 1,
-  'price': 2,
-  'seller-confirm-price': 2,
-  'done': 3
-};
-
-const activeIndex = computed(() => STEP_TO_INDEX[props.step] ?? 0);
+const activeIndex = computed(() => {
+  // 'seller-confirm-price' 跟 'price' 是同一個「確認金額」階段的一體兩面
+  const key = { 'safe-wait': 'safe', scan: 'scan', price: 'price', 'seller-confirm-price': 'price', done: 'done' }[props.step];
+  const i = stages.value.findIndex((s) => s.key === key);
+  return i < 0 ? 0 : i;
+});
 </script>
 
 <style scoped>
