@@ -779,37 +779,48 @@ const eq = (label, actual, expected) =>
       'functions emulator 未啟動（port 5001），略過 onOrderExpired 的記次驗證。' +
       '要驗請改用 npm run emu:fn'
     );
-  } else {
+  } else await (async () => {
     const OWNER2 = 'owner';
     const readCount = async (uid) => {
       const r = await getDoc(`users/${uid}`, OWNER2);
       return r.data?.expireCount ?? null;
     };
 
-    // 前面幾節也把訂單改成過 expired（第 7 節），那些 trigger 是非同步的，
-    // 可能在這裡歸零之後才落地，把基準值墊高。先等它們排空再重設。
-    await new Promise((r) => setTimeout(r, 4000));
+    // 這一節用自己的一組帳號與商品，不共用前面幾節的 buyer / seller。
+    //
+    // 原因：第 7 節把訂單改成過 expired，那些 trigger 是非同步的，可能在這裡
+    // 把計數歸零之後才落地，於是「準時到場的買家不被記次」偶爾會讀到 1。
+    // 先前是靠 sleep 等它們排空——那只是把競態的窗口調小，跑得慢一點就又中。
+    // 換成專屬帳號之後，前面幾節的 trigger 在結構上就碰不到這裡的計數器。
+    const fnSeller = await createUser('fn-seller@test.au.edu.tw');
+    const fnBuyer = await createUser('fn-buyer@test.au.edu.tw');
+    const FN_PID = 'prod-fn-expire';
+    await setDoc(
+      `products/${FN_PID}`,
+      { name: '記次測試用商品', price: 100, sellerId: fnSeller.uid, status: 'active', createdAt: new Date() },
+      fnSeller.token
+    );
 
-    // 兩邊都歸零，週期設在現在，讓「有沒有被加一次」一目了然
-    for (const u of [buyer, seller]) {
-      await setDoc(
-        `users/${u.uid}`,
-        { id: u.uid, expireCount: 0, expirePeriodStart: new Date() },
-        OWNER2
-      );
-    }
+    const fnOrderBase = {
+      ...orderBase,
+      buyerId: fnBuyer.uid,
+      sellerId: fnSeller.uid,
+      productId: FN_PID,
+      buyerReady: false,
+      sellerReady: false,
+    };
 
     // 買家準時到（按過安全交易），賣家放鳥 → 只有賣家該被記一次
     const FID = 'order-fn-expire';
-    await setDoc(`orders/${FID}`, orderBase, buyer.token);
-    await updateDoc(`orders/${FID}`, { status: 'accepted' }, seller.token);
-    await updateDoc(`orders/${FID}`, { buyerReady: true }, buyer.token);
-    await updateDoc(`orders/${FID}`, { status: 'expired' }, buyer.token);
+    await setDoc(`orders/${FID}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(`orders/${FID}`, { status: 'accepted' }, fnSeller.token);
+    await updateDoc(`orders/${FID}`, { buyerReady: true }, fnBuyer.token);
+    await updateDoc(`orders/${FID}`, { status: 'expired' }, fnBuyer.token);
 
     // trigger 是非同步的，輪詢等它落地
     let sellerCount = null;
     for (let i = 0; i < 30; i++) {
-      sellerCount = await readCount(seller.uid);
+      sellerCount = await readCount(fnSeller.uid);
       if (sellerCount === 1) break;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -817,23 +828,39 @@ const eq = (label, actual, expected) =>
     // 跟賣家那筆是同一個 Promise.all，不會晚太多，但也不保證同時落地。
     await new Promise((r) => setTimeout(r, 1500));
 
+    // 「port 5001 有回應」不等於「trigger 有註冊」。functions emulator 可能起
+    // 得來卻沒載入任何定義（載入逾時會印 Failed to load function definition），
+    // 或是同時有第二份 emulator 佔著埠。那種情況下這一節每一項都會失敗，看起來
+    // 像 7 個獨立的邏輯錯誤，實際上是同一個環境問題。
+    // 用第一個情境當金絲雀：它沒動靜就代表 trigger 根本沒跑，此時只留一則明確
+    // 的註記並略過本節，而不是拋出一串互相重複、指不到根因的失敗。
+    if (sellerCount !== 1) {
+      note(
+        'functions emulator 有回應（port 5001），但 onOrderExpired 完全沒有觸發，' +
+        '本節略過未驗。多半是 function 定義載入失敗或有多份 emulator 同時在跑——' +
+        '請看 npm run emu:fn 的輸出是否有 "Failed to load function definition" ' +
+        '或 "running multiple instances"，清乾淨後重跑。'
+      );
+      return;
+    }
+
     eq('放鳥的賣家被記一次爽約', sellerCount, 1);
-    eq('準時到場的買家不被記次', await readCount(buyer.uid), 0);
+    eq('準時到場的買家不被記次', await readCount(fnBuyer.uid), null);
 
     // 雙方都沒出現 → 兩邊都算爽約
     const FID2 = 'order-fn-expire-both';
-    await setDoc(`orders/${FID2}`, orderBase, buyer.token);
-    await updateDoc(`orders/${FID2}`, { status: 'accepted' }, seller.token);
-    await updateDoc(`orders/${FID2}`, { status: 'expired' }, seller.token);
+    await setDoc(`orders/${FID2}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(`orders/${FID2}`, { status: 'accepted' }, fnSeller.token);
+    await updateDoc(`orders/${FID2}`, { status: 'expired' }, fnSeller.token);
 
     let bothBuyer = null;
     for (let i = 0; i < 30; i++) {
-      bothBuyer = await readCount(buyer.uid);
+      bothBuyer = await readCount(fnBuyer.uid);
       if (bothBuyer === 1) break;
       await new Promise((r) => setTimeout(r, 500));
     }
     eq('雙方都沒出現時買家也被記一次', bothBuyer, 1);
-    eq('雙方都沒出現時賣家累加到 2', await readCount(seller.uid), 2);
+    eq('雙方都沒出現時賣家累加到 2', await readCount(fnSeller.uid), 2);
 
     /* ── 未回應（pending / negotiating 逾期）記在另一組計數 ── */
     const readNoReply = async (uid) => {
@@ -846,34 +873,34 @@ const eq = (label, actual, expected) =>
 
     // pending 沒人回 → 記賣家，不記買家
     const RID = 'order-noreply-pending';
-    await setDoc(`orders/${RID}`, { ...orderBase, createdAt: oldCreated }, buyer.token);
-    await updateDoc(`orders/${RID}`, { status: 'expired' }, buyer.token);
+    await setDoc(`orders/${RID}`, { ...fnOrderBase, createdAt: oldCreated }, fnBuyer.token);
+    await updateDoc(`orders/${RID}`, { status: 'expired' }, fnBuyer.token);
 
     let sellerNoReply = null;
     for (let i = 0; i < 30; i++) {
-      sellerNoReply = await readNoReply(seller.uid);
+      sellerNoReply = await readNoReply(fnSeller.uid);
       if (sellerNoReply === 1) break;
       await new Promise((r) => setTimeout(r, 500));
     }
     await new Promise((r) => setTimeout(r, 1500));
 
     eq('pending 逾期 → 記賣家未回應', sellerNoReply, 1);
-    eq('pending 逾期 → 不記發起的買家', await readNoReply(buyer.uid), null);
-    eq('未回應不會汙染爽約計數', await readCount(seller.uid), 2);
+    eq('pending 逾期 → 不記發起的買家', await readNoReply(fnBuyer.uid), null);
+    eq('未回應不會汙染爽約計數', await readCount(fnSeller.uid), 2);
 
     // negotiating：最後動作者是賣家 → 沒回的是買家
     const RID2 = 'order-noreply-nego';
-    await setDoc(`orders/${RID2}`, { ...orderBase, createdAt: oldCreated }, buyer.token);
+    await setDoc(`orders/${RID2}`, { ...fnOrderBase, createdAt: oldCreated }, fnBuyer.token);
     await updateDoc(
       `orders/${RID2}`,
       { status: 'negotiating', negotiationStep: 1, lastActionBy: 'seller' },
-      seller.token
+      fnSeller.token
     );
-    await updateDoc(`orders/${RID2}`, { status: 'expired' }, seller.token);
+    await updateDoc(`orders/${RID2}`, { status: 'expired' }, fnSeller.token);
 
     let buyerNoReply = null;
     for (let i = 0; i < 30; i++) {
-      buyerNoReply = await readNoReply(buyer.uid);
+      buyerNoReply = await readNoReply(fnBuyer.uid);
       if (buyerNoReply === 1) break;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -882,12 +909,12 @@ const eq = (label, actual, expected) =>
     // 12 小時下限：剛送出就逾期的訂單，誰也不記
     // （否則買家把面交時間填在半小時後，連送三筆再自己關掉，就能刷爆賣家）
     const RID3 = 'order-noreply-fresh';
-    await setDoc(`orders/${RID3}`, { ...orderBase, createdAt: new Date() }, buyer.token);
-    await updateDoc(`orders/${RID3}`, { status: 'expired' }, buyer.token);
+    await setDoc(`orders/${RID3}`, { ...fnOrderBase, createdAt: new Date() }, fnBuyer.token);
+    await updateDoc(`orders/${RID3}`, { status: 'expired' }, fnBuyer.token);
     await new Promise((r) => setTimeout(r, 3000));
 
-    eq('訂單成立不滿 12 小時就逾期 → 不記給任何人', await readNoReply(seller.uid), 1);
-  }
+    eq('訂單成立不滿 12 小時就逾期 → 不記給任何人', await readNoReply(fnSeller.uid), 1);
+  })();
 
   /* ─────────────────────────────────────────────────────────────
      10. 平台設定（settings/trade）

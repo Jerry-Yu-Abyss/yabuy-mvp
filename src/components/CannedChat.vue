@@ -77,7 +77,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { auth } from '@/firebase';
 import { toast } from './toast.js';
-import { isTradeHourAllowed, isWithinSafeHours, subscribeTradeSettings } from './tradeSettings.js';
+import { isTradeHourAllowed, SAFE_HOUR_END, subscribeTradeSettings } from './tradeSettings.js';
 import {
   CANNED_MESSAGES,
   DELAY_LABEL,
@@ -138,13 +138,16 @@ const toInputValue = (ms) => {
 const defaultProposal = () => {
   const base = Math.max(appointmentMs() ?? Date.now(), Date.now());
   const d = new Date(base + 30 * 60 * 1000);
-  // 限制關掉時就不必挪——挪了反而讓測試者拿不到「現在 +30 分」這種時間
-  if (isWithinSafeHours(d.getHours()) || !isTradeHourAllowed(d.getHours())) {
-    return toInputValue(d.getTime());
-  }
-  if (d.getHours() >= 18) {
-    d.setDate(d.getDate() + 1);
-  }
+  // 已經是合法時間就原樣回傳，只有「這個時間現在不能用」才需要挪。
+  //
+  // 這裡原本寫成 isWithinSafeHours(h) || !isTradeHourAllowed(h)，兩個方向都是
+  // 反的：限制開啟時碰到 22:00 反而原樣回傳（面板一開就報錯），限制關閉時碰到
+  // 22:00 又硬挪到隔天 09:00（測試者拿不到「現在 +30 分」這種時間）。等於開關
+  // 對推遲請求完全沒作用。isTradeHourAllowed() 本身已經把開關算進去了，直接問。
+  if (isTradeHourAllowed(d.getHours())) return toInputValue(d.getTime());
+
+  // 走到這裡代表限制生效中、而且這個時間不在時段內：往後挪到最近的 09:00
+  if (d.getHours() >= SAFE_HOUR_END) d.setDate(d.getDate() + 1);
   d.setHours(9, 0, 0, 0);
   return toInputValue(d.getTime());
 };

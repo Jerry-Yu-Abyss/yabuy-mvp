@@ -365,7 +365,34 @@ function checkSourceInvariants() {
     ok('廣告插槽不會在同一次 recompute 裡重複塞同一則廣告');
   }
 
-  // 1-5 規則檔不該退回「登入就行」
+  // 1-5 推遲面交時間的預設值必須直接問 isTradeHourAllowed
+  //
+  // 事故：接上「交易時段限制」開關時，CannedChat 的 defaultProposal 寫成
+  //   isWithinSafeHours(h) || !isTradeHourAllowed(h)
+  // 兩個方向都是反的——限制開啟時碰到 22:00 原樣回傳（面板一開就報錯），
+  // 限制關閉時碰到 22:00 又硬挪到隔天 09:00（等於開關對推遲請求沒作用）。
+  // isTradeHourAllowed() 本身就把開關算進去了，任何「先自己判斷時段、再看
+  // 開關」的寫法都會再犯同一個錯。
+  const chatSrc = read('src/components/CannedChat.vue');
+  const proposalBody = extractFn(chatSrc, 'defaultProposal');
+  if (!proposalBody) {
+    bad('找不到 defaultProposal', 'src/components/CannedChat.vue：函式被改名或刪除，請同步更新此檢查');
+  } else if (/!\s*isTradeHourAllowed/.test(proposalBody)) {
+    bad(
+      '推遲預設值又出現反向的時段判斷',
+      'defaultProposal 不該用 !isTradeHourAllowed()：那條分支在限制開啟時會把不合法的時間原樣送出，' +
+        '在限制關閉時又會硬挪時間，等於開關沒接上。直接用 isTradeHourAllowed() 判斷「要不要挪」即可'
+    );
+  } else if (!proposalBody.includes('isTradeHourAllowed')) {
+    bad(
+      '推遲預設值沒有跟時段開關連動',
+      'defaultProposal 必須經過 isTradeHourAllowed()，否則管理端關掉時段限制時推遲請求仍會被挪走'
+    );
+  } else {
+    ok('推遲面交時間的預設值有跟時段開關連動');
+  }
+
+  // 1-6 規則檔不該退回「登入就行」
   const rules = read('firestore.rules');
   const LOOSE = [
     ['orders', /match \/orders\/\{[^}]+\} \{\s*\n\s*allow read, write: if request\.auth != null;/],
