@@ -393,7 +393,8 @@ const handleSave = async () => {
 
 /* 瀏海安全區：與 App.vue 的 .safe-area-spacer 同一套處理 */
 .panel-safe-top {
-  height: env(safe-area-inset-top, 48px);
+  /* 備援給 0：不支援 env() 的裝置沒有瀏海，見 App.vue 的 .safe-area-spacer */
+  height: env(safe-area-inset-top, 0px);
   flex-shrink: 0;
   background: #d1d9c6;
 }

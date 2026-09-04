@@ -397,7 +397,14 @@ html, body, #app {
 
 /* 頂部安全區推擠 */
 .header-section { flex-shrink: 0; background-color: #d1d9c6; }
-.safe-area-spacer { height: env(safe-area-inset-top, 48px); width: 100%; }
+/* env() 的第二個參數是「瀏覽器不支援 env() 時」的備援，不是「值為 0 時」的
+   備援。原本寫 48px／44px 的用意是「偵測不到就當作有瀏海」，但實際結果相反：
+     有瀏海的 iPhone      → env() 支援，拿到真實 inset，正常
+     桌機／一般 Android   → env() 支援且回傳 0，正常
+     不支援 env() 的瀏覽器 → 直接吃備援值，憑空多出一條色帶（頂部跑版）
+   會落在第三種的裝置本來就沒有瀏海，備援給 0 才是對的。
+   同樣的寫法在 List／Mailbox／Admin／DealTimeline／Heart 也各有一處。 */
+.safe-area-spacer { height: env(safe-area-inset-top, 0px); width: 100%; }
 
 .top-nav-bar { 
   height: 56px; display: flex; align-items: center; 

@@ -37,7 +37,8 @@ const activeIndex = computed(() => {
 <style scoped>
 .dt-row {
   display: flex; align-items: center;
-  padding: calc(env(safe-area-inset-top, 44px) + 14px) 20px 10px;
+  /* 備援給 0：不支援 env() 的裝置沒有瀏海，見 App.vue 的 .safe-area-spacer */
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 10px;
   flex-shrink: 0;
 }
 .dt-step { display: flex; flex-direction: column; align-items: center; gap: 5px; flex-shrink: 0; }

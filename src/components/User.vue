@@ -1108,7 +1108,7 @@ const removeFavorite = async (fav) => {
   border-top: 1px solid rgba(0,0,0,0.03);
   background: #fcfcfd;
   flex-shrink: 0;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom)); 
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); 
 }
 .btn-text, .btn-cancel-v2 { padding: 12px 20px; background: none; border: none; font-size: 14px; font-weight: 700; color: #666; cursor: pointer; border-radius: 12px; }
 .btn-cancel-v2 { background: #f1f0ee; color: #555; }

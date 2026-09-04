@@ -392,7 +392,39 @@ function checkSourceInvariants() {
     ok('推遲面交時間的預設值有跟時段開關連動');
   }
 
-  // 1-6 規則檔不該退回「登入就行」
+  // 1-6 env(safe-area-inset-*) 的備援一律是 0
+  //
+  // 事故：頂部安全區推擠寫成 env(safe-area-inset-top, 48px)。那個 48px 是
+  // 「瀏覽器不支援 env() 時」的備援，不是「值為 0 時」的備援——原意是「偵測
+  // 不到就當作有瀏海」，實際上支援 env() 的桌機／Android 本來就會拿到 0，
+  // 反而是不支援 env() 的舊瀏覽器（那些裝置根本沒有瀏海）憑空多出一條色帶。
+  // 同樣的寫法一度散在 6 個檔案裡。
+  const SAFE_AREA_FILES = [
+    'src/App.vue',
+    'src/components/List.vue',
+    'src/components/Admin.vue',
+    'src/components/DealTimeline.vue',
+    'src/components/Heart.vue',
+    'src/components/Mailbox.vue',
+    'src/components/User.vue',
+  ];
+  const badFallbacks = [];
+  for (const f of SAFE_AREA_FILES) {
+    if (!existsSync(join(ROOT, f))) continue;
+    for (const m of read(f).matchAll(/env\(\s*safe-area-inset-[a-z]+\s*,([^)]*)\)/g)) {
+      const fallback = m[1].trim();
+      if (fallback !== '0px' && fallback !== '0') badFallbacks.push(`${f}: ${m[0]}`);
+    }
+  }
+  badFallbacks.length
+    ? bad(
+        'env(safe-area-inset-*) 又出現非 0 的備援',
+        `${badFallbacks.join('、')}。備援只在「瀏覽器不支援 env()」時生效，` +
+          '而那些裝置沒有瀏海——給非 0 值會讓頂部憑空多出一條色帶。要保證最小間距請用 max()'
+      )
+    : ok('env(safe-area-inset-*) 的備援都是 0');
+
+  // 1-7 規則檔不該退回「登入就行」
   const rules = read('firestore.rules');
   const LOOSE = [
     ['orders', /match \/orders\/\{[^}]+\} \{\s*\n\s*allow read, write: if request\.auth != null;/],

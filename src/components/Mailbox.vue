@@ -712,7 +712,7 @@ onUnmounted(() => {
 /* 以下為你原本的樣式，完全保留不變 */
 .mailbox-page-root { position: absolute; inset: 0; background-color: #f6f8f5; display: flex; flex-direction: column; }
 .mailbox-header { background: rgba(246, 248, 245, 0.9); backdrop-filter: blur(10px); padding-bottom: 12px; }
-.header-top { display: flex; align-items: center; justify-content: space-between; padding: calc(env(safe-area-inset-top, 44px) + 10px) 20px 10px; }
+.header-top { display: flex; align-items: center; justify-content: space-between; padding: calc(env(safe-area-inset-top, 0px) + 10px) 20px 10px; }
 .back-btn-circle { width: 32px; height: 32px; border-radius: 50%; background: #fff; border: 1px solid #eee; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
 .header-title { font-size: 20px; font-weight: 850; color: #1a1a1a; }
 
