@@ -95,9 +95,9 @@ const props = defineProps({
 const emit = defineEmits(['close']);
 
 const myUid = auth.currentUser?.uid;
-const otherName = computed(() =>
-  props.role === 'buy' ? (props.order.sellerName || '賣家') : (props.order.buyerName || '買家')
-);
+// 信箱與這個聊天室都不揭露對方的真實暱稱，只用身分稱呼——面交前就把
+// 姓名攤在陌生人面前沒有必要，而 role 已經足夠讓使用者知道在跟誰談。
+const otherName = computed(() => (props.role === 'buy' ? '賣家' : '買家'));
 
 const messages = ref([]);
 const loading = ref(true);

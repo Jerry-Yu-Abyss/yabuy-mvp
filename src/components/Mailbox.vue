@@ -117,10 +117,6 @@
               </div>
 
               <div class="details-box">
-                <div class="detail-line">
-                  <span class="icon">👤</span>
-                  <span class="val">{{ activeTab === 'buy' ? '賣家：' + order.sellerName : '買家：' + order.buyerName }}</span>
-                </div>
                 <div class="detail-line" :class="{ 'negotiating-highlight': order.status === 'negotiating' }">
                   <span class="icon">📍</span>
                   <span class="val">{{ order.location || '校內面交' }}</span>
