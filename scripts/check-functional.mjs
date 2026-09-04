@@ -272,14 +272,14 @@ const CASES = [
   {
     id: 'C-09',
     area: 'C. 交易邏輯',
-    title: '雙方按下安全交易 → 進入掃碼（掃碼開關開啟時）',
+    title: '雙方按下安全交易 → 進入掃碼（簡易交易模式關閉時）',
     expect: '任一方先按顯示「等待對方」；雙方都按後 step 進入 scan',
     runner: RUNNER.DUO,
   },
   {
     id: 'C-10',
     area: 'C. 交易邏輯',
-    title: '交易點代碼錯誤時被擋（掃碼開關開啟時）',
+    title: '交易點代碼錯誤時被擋（簡易交易模式關閉時）',
     expect: '輸入非該地點代碼提示「代碼不符」，不寫入 scannedAt',
     runner: RUNNER.DUO,
   },
@@ -364,13 +364,14 @@ const CASES = [
   {
     id: 'C-20',
     area: 'C. 交易邏輯',
-    title: '管理端可切換交易點掃碼驗證',
+    title: '管理端可切換簡易交易模式（跳過交易點掃碼）',
     expect:
-      '管理後台「用戶管理」分頁的「📷 交易點掃碼驗證」按下「暫時關閉」後，' +
-      'settings/trade.enforceQrScan=false；此時雙方按下安全交易會直接進入金額確認' +
-      '（時間軸從 4 站變 3 站，不出現掃碼站），完成畫面不顯示「實際地點／實際時間」' +
-      '而顯示「交易地點」；重新開啟後掃碼站恢復。切換會寫入 audit_logs。' +
-      '已經掃過碼的舊訂單不會因為切換而倒退回掃碼畫面',
+      '簡易交易模式預設就是開啟的：雙方按下安全交易後直接進入金額確認' +
+      '（時間軸只有 3 站，不出現掃碼站），完成畫面不顯示「實際地點／實際時間」' +
+      '而顯示「交易地點」。管理後台「用戶管理」分頁的「⚡ 簡易交易模式」按下' +
+      '「改用完整流程」後 settings/trade.simpleTradeMode=false，掃碼站恢復。' +
+      '兩個方向的切換都會寫入 audit_logs。已經掃過碼的舊訂單不會因為切換而' +
+      '倒退回掃碼畫面',
     runner: RUNNER.DUO,
   },
 
@@ -569,7 +570,7 @@ function checkBusinessConstants() {
     ['交易時段下限 06:00', 'src/components/tradeSettings.js', /SAFE_HOUR_START = 6/],
     ['交易時段上限 18:00', 'src/components/tradeSettings.js', /SAFE_HOUR_END = 18/],
     ['時段開關預設為「限制生效」', 'src/components/tradeSettings.js', /enforceSafeHours = ref\(true\)/],
-    ['掃碼開關預設為「限制生效」', 'src/components/tradeSettings.js', /enforceQrScan = ref\(true\)/],
+    ['簡易交易模式預設開啟', 'src/components/tradeSettings.js', /SIMPLE_MODE_DEFAULT = true/],
     ['安全交易前置 10 分鐘', 'src/components/Mailbox.vue', /SAFE_TRADE_WINDOW_MS = 10 \* 60 \* 1000/],
     ['取消上限 3 次', 'src/components/Mailbox.vue', /CANCEL_LIMIT = 3/],
     ['取消週期 30 天', 'src/components/Mailbox.vue', /CANCEL_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],

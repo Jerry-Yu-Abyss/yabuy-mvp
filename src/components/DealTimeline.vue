@@ -16,8 +16,9 @@ import { enforceQrScan } from './tradeSettings.js';
 
 const props = defineProps({ step: { type: String, required: true } });
 
-// 管理員關掉掃碼驗證時，流程真的少一站，時間軸就不該再畫出一個永遠走不到的
-// 圓點——使用者會以為自己漏了一步。
+// 簡易交易模式下流程真的少一站，時間軸就不該再畫出一個永遠走不到的圓點——
+// 使用者會以為自己漏了一步。enforceQrScan 是 tradeSettings 由 simpleTradeMode
+// 衍生出來的，這裡不直接讀總開關，之後簡易模式再省一站也不必改這支。
 const stages = computed(() => [
   { key: 'safe',  label: '安全交易' },
   ...(enforceQrScan.value ? [{ key: 'scan', label: '掃碼確認' }] : []),

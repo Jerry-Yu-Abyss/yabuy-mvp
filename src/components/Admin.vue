@@ -119,19 +119,19 @@
           </button>
         </div>
 
-        <!-- 📷 交易點掃碼驗證開關：沒有實體 QR 的環境要能把面交流程跑到底 -->
-        <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !enforceQrScan }">
+        <!-- ⚡ 簡易交易模式：目前管的是「跳過交易點掃碼」，之後要再省一站也掛在這個開關底下 -->
+        <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !simpleTradeMode }">
           <div class="claim-text">
-            <strong>📷 交易點掃碼驗證</strong>
-            <span>{{ enforceQrScan ? '✅ 生效中：面交需雙方掃描交易點 QR' : '🧪 已關閉：面交跳過掃碼，直接進入金額確認' }}</span>
+            <strong>⚡ 簡易交易模式</strong>
+            <span>{{ simpleTradeMode ? '⚡ 生效中：面交跳過掃碼，按下安全交易後直接確認金額' : '📷 已關閉：面交需雙方掃描交易點 QR（完整流程）' }}</span>
           </div>
           <button
             class="btn-claim"
-            :class="{ 'btn-danger-toggle': enforceQrScan }"
-            :disabled="qrToggleLoading"
-            @click="toggleQrScan"
+            :class="{ 'btn-danger-toggle': simpleTradeMode }"
+            :disabled="simpleToggleLoading"
+            @click="toggleSimpleMode"
           >
-            {{ qrToggleLoading ? '處理中...' : (enforceQrScan ? '暫時關閉' : '重新開啟') }}
+            {{ simpleToggleLoading ? '處理中...' : (simpleTradeMode ? '改用完整流程' : '開啟簡易模式') }}
           </button>
         </div>
 
@@ -500,7 +500,7 @@ import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Indicate from './Indicate.vue';
 import {
   enforceSafeHours, setEnforceSafeHours,
-  enforceQrScan, setEnforceQrScan,
+  simpleTradeMode, setSimpleTradeMode,
   subscribeTradeSettings
 } from './tradeSettings.js';
 
@@ -788,39 +788,48 @@ const toggleSafeHours = async () => {
   }
 };
 
-// 掃碼驗證開關。掃碼那一站的程式碼完整保留，關掉只是讓流程繞過它——
-// 沒有實體 QR 的環境（開發機、還沒貼上 QR 的交易點）才跑得完整條面交流程。
-// 關閉期間完成畫面不會再顯示「實際地點／實際時間」：那兩筆本來就是掃碼的
-// 產物，沒掃就沒有紀錄，印一個「—」比不印更容易讓人誤會有查證過。
-const qrToggleLoading = ref(false);
+// ================= ⚡ 簡易交易模式開關 =================
+// 目前這個開關管的只有一件事：面交流程跳不跳過「掃描交易點 QR」那一站。
+// 之所以不叫「掃碼開關」，是因為面交還有其他可省的關卡，之後要再省一站時是
+// 在這個開關底下多加一條，管理端不會長成一排彼此有交互作用的開關。
+//
+// 掃碼那一站的程式碼完整保留，開啟簡易模式只是讓流程繞過它——沒有實體 QR
+// 的環境（開發機、還沒貼上 QR 的交易點）才跑得完整條面交流程。簡易模式期間
+// 完成畫面不會顯示「實際地點／實際時間」：那兩筆本來就是掃碼的產物，沒掃就
+// 沒有紀錄，印一個「—」比不印更容易讓人誤會有查證過。
+//
+// 這個開關預設就是開的（見 tradeSettings.js 的 SIMPLE_MODE_DEFAULT），所以
+// 兩個方向都寫稽核紀錄，事後查得到全站流程是誰在什麼時候改的。
+const simpleToggleLoading = ref(false);
 
-const toggleQrScan = async () => {
-  const turningOff = enforceQrScan.value;
+const toggleSimpleMode = async () => {
+  const turningOn = !simpleTradeMode.value;
   const ok = await confirmDialog(
-    turningOff
-      ? '確定要暫時關閉交易點掃碼驗證嗎？\n\n關閉期間「所有使用者」的面交流程都會跳過掃碼，' +
-        '直接從安全交易進到金額確認，系統也不會留下實際交易地點與時間的紀錄。測試完請記得重新開啟。'
-      : '確定要重新開啟交易點掃碼驗證嗎？'
+    turningOn
+      ? '確定要開啟簡易交易模式嗎？\n\n「所有使用者」的面交流程都會跳過交易點掃碼，' +
+        '雙方按下安全交易後直接進入金額確認，系統不會留下實際交易地點與時間的紀錄。'
+      : '確定要改用完整流程嗎？\n\n「所有使用者」的面交都會多一站掃碼驗證，' +
+        '交易點現場必須已經貼上 QR，否則雙方會卡在掃碼那一站走不下去。'
   );
   if (!ok) return;
 
-  qrToggleLoading.value = true;
+  simpleToggleLoading.value = true;
   try {
-    await setEnforceQrScan(!turningOff, auth.currentUser?.uid);
+    await setSimpleTradeMode(turningOn, auth.currentUser?.uid);
     await writeAuditLog(
       'security',
-      turningOff ? '🧪 交易點掃碼驗證已關閉' : '🔒 交易點掃碼驗證已重新開啟',
-      turningOff
-        ? '管理員暫時關閉交易點掃碼驗證，關閉期間所有面交流程跳過掃碼，不會留存實際交易地點與時間。'
-        : '管理員重新開啟交易點掃碼驗證。',
-      { level: turningOff ? 'warning' : 'normal' }
+      turningOn ? '⚡ 簡易交易模式已開啟' : '📷 已改回完整交易流程',
+      turningOn
+        ? '管理員開啟簡易交易模式，所有面交流程跳過交易點掃碼，不會留存實際交易地點與時間。'
+        : '管理員改回完整交易流程，所有面交都需雙方掃描交易點 QR。',
+      { level: turningOn ? 'warning' : 'normal' }
     );
-    toast.success(turningOff ? '🧪 已關閉掃碼驗證' : '🔒 已重新開啟掃碼驗證');
+    toast.success(turningOn ? '⚡ 已開啟簡易交易模式' : '📷 已改回完整流程');
   } catch (e) {
-    console.error('[Admin] 切換掃碼驗證失敗：', e.code, e.message);
+    console.error('[Admin] 切換簡易交易模式失敗：', e.code, e.message);
     toast('❌ 切換失敗，請重試。');
   } finally {
-    qrToggleLoading.value = false;
+    simpleToggleLoading.value = false;
   }
 };
 

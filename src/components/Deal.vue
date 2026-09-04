@@ -322,7 +322,7 @@ const expectedCode = computed(() => codeForLocationName(liveOrder.value.location
 const actualLocationName = computed(() =>
   nameForLocationCode(liveOrder.value.actualLocationCode) || liveOrder.value.location
 );
-// 掃碼被關掉時這兩個時間戳不會存在，完成畫面就不該還印「實際時間 —」——
+// 簡易模式下這兩個時間戳不會存在，完成畫面就不該還印「實際時間 —」——
 // 那是「沒有紀錄」，不是「紀錄是空的」。
 const hasScanRecord = computed(() =>
   !!liveOrder.value.buyerScannedAt || !!liveOrder.value.sellerScannedAt
@@ -350,7 +350,7 @@ onMounted(() => {
   // 卻已經少了一站（實測踩到過）。開關本身也可能在面交進行中被切換。
   // 兩種情況都靠這個 watch 重新推導一次。
   watch(enforceQrScan, () => {
-    log('⚙️ 掃碼開關變動 → 重新推導步驟', { enforceQrScan: enforceQrScan.value });
+    log('⚙️ 簡易交易模式變動 → 重新推導步驟', { enforceQrScan: enforceQrScan.value });
     if (liveOrder.value?.id || props.order?.id) syncStep();
   });
   subscribeTradeSettings();
@@ -394,11 +394,12 @@ const syncStep = () => {
 
   const bothReady = !!o.buyerReady && !!o.sellerReady;
 
-  // 管理員關掉掃碼驗證時，這一站整站跳過——程式碼完整保留，只是不經過。
-  // 用 || 而不是改寫掃碼的判斷：已經掃過碼的訂單即使中途被關掉開關，也還是
-  // 走同一條分支，不會因為設定變動而倒退回掃碼畫面。
+  // 簡易交易模式（settings/trade.simpleTradeMode，預設開啟）會讓這一站整站
+  // 跳過——程式碼完整保留，只是不經過。用 || 而不是改寫掃碼的判斷：已經掃過
+  // 碼的訂單即使中途被切成簡易模式，也還是走同一條分支，不會因為設定變動而
+  // 倒退回掃碼畫面。
   //
-  // ⚠️ 這裡一定要跟 bothReady 綁在一起。掃碼開關關掉時這個值恆為 true，
+  // ⚠️ 這裡一定要跟 bothReady 綁在一起。簡易模式下這個值恆為 true，
   // 若像原本那樣獨立成一條先判斷的分支，任何一方只要打開 Deal 就會直接跳到
   // 金額，連「按下安全交易」那一站都被略過。
   const scanCleared = (!!o.buyerScannedAt && !!o.sellerScannedAt) || !enforceQrScan.value;
