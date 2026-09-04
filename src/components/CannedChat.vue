@@ -77,7 +77,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { auth } from '@/firebase';
 import { toast } from './toast.js';
-import { isTradeHourAllowed, SAFE_HOUR_END, subscribeTradeSettings } from './tradeSettings.js';
+import { isTradeHourAllowed, enforceSafeHours, SAFE_HOUR_END, subscribeTradeSettings } from './tradeSettings.js';
 import {
   CANNED_MESSAGES,
   DELAY_LABEL,
@@ -163,7 +163,11 @@ const delayError = computed(() => {
   const t = new Date(proposedRaw.value).getTime();
   if (isNaN(t)) return '時間格式不正確';
   if (t <= Date.now()) return '新時間必須晚於現在';
-  if (t > Date.now() + MAX_DELAY_MS) return '最多只能推遲到 24 小時內';
+  // 24 小時上限跟著「交易時段限制」開關走：關掉之後才推得到明天以後，
+  // 否則「把訂單推遠一點再驗逾期」這種測試在 UI 上永遠做不到。
+  if (enforceSafeHours.value && t > Date.now() + MAX_DELAY_MS) {
+    return '最多只能推遲到 24 小時內';
+  }
   const cur = appointmentMs();
   if (cur != null && t <= cur) return '推遲的時間要比原本的約定時間晚';
   const h = new Date(t).getHours();

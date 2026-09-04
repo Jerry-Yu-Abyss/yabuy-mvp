@@ -107,7 +107,7 @@
         <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !enforceSafeHours }">
           <div class="claim-text">
             <strong>🕒 交易時段限制（06:00 - 18:00）</strong>
-            <span>{{ enforceSafeHours ? '✅ 生效中：非時段內無法發起交易' : '🧪 已關閉：任何時間都能發起交易' }}</span>
+            <span>{{ enforceSafeHours ? '✅ 生效中：非時段內無法發起交易，推遲最多 24 小時' : '🧪 已關閉：任何時間都能發起交易，推遲也不限 24 小時' }}</span>
           </div>
           <button
             class="btn-claim"
