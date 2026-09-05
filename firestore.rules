@@ -23,6 +23,19 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // 🚧 交易功能維護中：管理端的緊急煞車（settings/trade.maintenance）。
+    // 系統出錯時把所有會推進交易狀態的寫入一次擋掉，讓錯誤不再擴散。
+    //
+    // 為什麼在規則層而不是只擋前端：前端擋得住的只有「按鈕按不下去」，繞過
+    // 前端直接打 REST 照樣寫得進去——那樣的煞車在真的出事時等於沒有。
+    //
+    // 讀不到 settings 文件時視為沒有維護（fail-open）：這個開關預設不存在，
+    // 不能因為一份還沒建立的文件把全站交易鎖死。
+    function inMaintenance() {
+      let path = /databases/$(database)/documents/settings/trade;
+      return exists(path) && get(path).data.get('maintenance', false) == true;
+    }
+
     match /users/{uid} {
       // email 等個資只給登入者看（原本 if true 讓沒登入的人也能撈到全站 email
       // 清單），一般瀏覽（首頁商品等）本來就不靠讀這個 collection，不受影響。
@@ -203,6 +216,15 @@ service cloud.firestore {
                (request.auth.uid == resource.data.buyerId ? 'buyer' : 'seller');
       }
 
+      // 維護期間只放行「取消」這一條出路。卡在一半的人要能自己結案，其他會
+      // 推進交易狀態的寫入（接受、協商、安全交易、掃碼、成交、逾期關閉）全擋。
+      // 管理員不受影響：orders.update 的 isAdmin() 分支在這條之前就放行了，
+      // 維護期間仍然要有人能進去把壞掉的資料修好。
+      function maintenanceAllows() {
+        return !inMaintenance()
+            || request.resource.data.get('status', '') == 'rejected';
+      }
+
       // 成交價：只有買家能填（Deal.vue 的 price 步驟），只有賣家能退回成 null
       // （sellerConfirmPrice(false)），而且都必須發生在 accepted 階段。
       // 上限與 Deal.vue 的 MAX_PRICE 一致——那邊只是前端擋，繞過就能寫進天文
@@ -236,13 +258,14 @@ service cloud.firestore {
         && request.resource.data.productId is string
         && request.resource.data.productId != ''
         && sellerOwnsProduct(request.resource.data.productId)
-        && notTradeBanned();
+        && notTradeBanned()
+        && !inMaintenance();
 
       allow update: if request.auth != null && (
         isAdmin()
         || (isParty() && immutablePartiesKept() && negotiationStepOk()
             && statusFlowOk() && finalPriceOk() && delayUsedOk()
-            && cancelActorOk())
+            && cancelActorOk() && maintenanceAllows())
       );
 
       // 目前沒有任何地方會刪除訂單，不開放
@@ -297,7 +320,11 @@ service cloud.firestore {
         && request.resource.data.stars >= 1
         && request.resource.data.stars <= 5
         && orderExists(request.resource.data.orderId)
-        && ratingPairOk(request.resource.data.orderId);
+        && ratingPairOk(request.resource.data.orderId)
+        // 維護期間連互評也停：它會觸發 onReviewCreated 去改 users 的評分彙總，
+        // 而緊急煞車的用意就是「先讓資料不要再變動」。訂單已經 completed，
+        // 評分等維護結束再補得回來。
+        && !inMaintenance();
       allow read: if isAdmin();
       allow update, delete: if false;
     }

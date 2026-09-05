@@ -1,7 +1,8 @@
 // tradeSettings.js
-// 平台層級的交易設定，目前有兩項開關：
+// 平台層級的交易設定，目前有三項開關：
 //   enforceSafeHours 交易時段限制（06:00–18:00）要不要強制
 //   simpleTradeMode  簡易交易模式：面交流程要不要省略掉可以省的關卡
+//   maintenance      交易功能維護中：系統出錯時的緊急煞車
 //
 // 為什麼要有這些開關：它們都是產品層的安全規則，但驗證逾期、推遲、面交流程
 // 時常常需要在晚上造資料、或在沒有實體 QR 的環境把面交跑到底，被規則擋住就
@@ -28,7 +29,7 @@ export const SAFE_HOUR_START = 6;
 export const SAFE_HOUR_END = 18;
 export const SETTINGS_DOC = 'trade';
 
-// 兩個開關的預設值刻意不同方向，因為失敗的代價不一樣：
+// 開關的預設值刻意不同方向，因為失敗的代價不一樣：
 //
 // enforceSafeHours 預設 true（限制生效）——所有失敗路徑都回到 true。讀不到設
 // 定（還沒登入、規則擋掉、文件不存在、監聽斷線）時寧可擋住一筆合法交易讓人
@@ -42,6 +43,14 @@ export const SIMPLE_MODE_DEFAULT = true;
 
 export const enforceSafeHours = ref(true);
 export const simpleTradeMode = ref(SIMPLE_MODE_DEFAULT);
+
+// 🚧 交易功能維護中：出事時把所有會推進交易狀態的寫入一次擋掉。
+//
+// 與上面兩個開關方向相反，這一個讀不到設定時是「放行」（false）。理由是它
+// 唯一的真正把關在 firestore.rules 的 inMaintenance()——前端只是負責把畫面
+// 講清楚、不要讓人按下去才吃到 permission-denied。既然規則層攔得住，就不該
+// 因為一次讀取失敗、或一份還沒建立的 settings 文件，把全站交易鎖死。
+export const tradeMaintenance = ref(false);
 
 // 面交流程要不要經過掃碼那一站。Deal.vue／DealTimeline.vue 讀的是這個衍生值，
 // 不是直接讀 simpleTradeMode——之後簡易模式若再多省一站，那些檔案不必跟著改。
@@ -74,11 +83,14 @@ export const subscribeTradeSettings = () => {
       // 只有明確存成 false 才算關閉時段限制；欄位缺漏一律當作限制生效
       enforceSafeHours.value = d.enforceSafeHours !== false;
       simpleTradeMode.value = readSimpleMode(d);
+      // 只有明確存成 true 才算維護中，欄位缺漏一律當作正常營運
+      tradeMaintenance.value = d.maintenance === true;
     },
     (err) => {
       console.error('[tradeSettings] 讀取設定失敗，回到預設值：', err.code, err.message);
       enforceSafeHours.value = true;
       simpleTradeMode.value = SIMPLE_MODE_DEFAULT;
+      tradeMaintenance.value = false;
     }
   );
   return unsubscribe;
@@ -111,3 +123,6 @@ export const setEnforceSafeHours = (on, uid) =>
 // 舊版讀得懂的狀態。
 export const setSimpleTradeMode = (on, uid) =>
   writeSetting({ simpleTradeMode: !!on, enforceQrScan: !on }, uid);
+
+export const setTradeMaintenance = (on, uid) =>
+  writeSetting({ maintenance: !!on }, uid);

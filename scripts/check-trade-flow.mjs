@@ -1024,6 +1024,30 @@ const eq = (label, actual, expected) =>
       await new Promise((r) => setTimeout(r, 500));
     }
     eq('賣家取消談成的交易 → 記賣家一次', sellerCancel, 1);
+
+    // 維護期間的取消不計次：那不是使用者決定不交易，是系統把他推出去的。
+    // 訂單要先在正常狀態下建好——維護一開起來就建不了新訂單了。
+    const CID4 = 'order-cancel-maintenance';
+    await setDoc(`orders/${CID4}`, fnOrderBase, fnBuyer.token);
+    await setDoc(
+      'settings/trade',
+      { enforceSafeHours: true, maintenance: true, updatedAt: new Date() },
+      OWNER2
+    );
+    await updateDoc(
+      `orders/${CID4}`,
+      { status: 'rejected', lastActionBy: 'buyer' },
+      fnBuyer.token
+    );
+    // 一樣沒有數字可以等——要驗的是「沒有增加」，只能給 trigger 時間落地再讀
+    await new Promise((r) => setTimeout(r, 4000));
+    eq('維護期間的取消不計入額度', await readCancel(fnBuyer.uid), 1);
+
+    await setDoc(
+      'settings/trade',
+      { enforceSafeHours: true, maintenance: false, updatedAt: new Date() },
+      OWNER2
+    );
   })();
 
   /* ─────────────────────────────────────────────────────────────
@@ -1054,6 +1078,110 @@ const eq = (label, actual, expected) =>
     '第三者同樣不可寫入平台設定',
     await setDoc('settings/trade', { enforceSafeHours: false }, third.token),
     '同上，create／覆寫也要一起擋'
+  );
+
+  /* ─────────────────────────────────────────────────────────────
+     11. 交易功能維護中（緊急煞車）
+     ───────────────────────────────────────────────────────────── */
+  section('11. 交易功能維護中（緊急煞車）');
+
+  // 這一節放最後，因為維護模式一開起來，前面那些「正常情況下該放行」的
+  // 寫入全都會被擋——順序顛倒的話會誤判成一堆邏輯錯誤。
+  //
+  // 管理員不受維護限制那條沒辦法在這裡驗：isAdmin() 看的是 custom claims，
+  // 這個 harness 沒有帶 claims 的身分。規則的結構本身保證了它——
+  // orders.update 的 isAdmin() 分支在 maintenanceAllows() 之前就 or 掉了。
+
+  // 維護開起來之後就建不了新訂單，所以要驗的訂單先在正常狀態下備好
+  const MAINT_A = 'order-maint-freeze';
+  const MAINT_B = 'order-maint-exit';
+  await setDoc(`orders/${MAINT_A}`, orderBase, buyer.token);
+  await setDoc(`orders/${MAINT_B}`, orderBase, buyer.token);
+
+  expectDenied(
+    '一般使用者不可自行開啟維護模式',
+    await updateDoc('settings/trade', { maintenance: true }, buyer.token),
+    '這是全站煞車，寫入權限必須跟其他平台設定一樣鎖在管理員'
+  );
+
+  // 用 owner（emulator 的規則繞過令牌）模擬管理端按下「緊急叫停」
+  await setDoc(
+    'settings/trade',
+    { enforceSafeHours: true, maintenance: true, updatedAt: new Date() },
+    'owner'
+  );
+
+  expectDenied(
+    '維護中不可發起新交易',
+    await setDoc('orders/order-maint-new', orderBase, buyer.token),
+    'orders.create 的 inMaintenance()。只擋前端的煞車，繞過 TradeModal 直接打 REST 就沒了'
+  );
+
+  expectDenied(
+    '維護中不可接受訂單',
+    await updateDoc(`orders/${MAINT_A}`, { status: 'accepted' }, seller.token),
+    'maintenanceAllows() 只放行 rejected，其他狀態變更一律擋'
+  );
+
+  expectDenied(
+    '維護中不可提出新提案',
+    await updateDoc(
+      `orders/${MAINT_A}`,
+      { status: 'negotiating', negotiationStep: 1, lastActionBy: 'seller' },
+      seller.token
+    ),
+    '協商也是在推進交易狀態'
+  );
+
+  expectDenied(
+    '維護中不可按下安全交易',
+    await updateDoc(`orders/${MAINT_A}`, { buyerReady: true }, buyer.token),
+    '面交流程整條要停住，否則出錯的地方會繼續被踩'
+  );
+
+  expectDenied(
+    '維護中不可逾期關閉',
+    await updateDoc(`orders/${MAINT_A}`, { status: 'expired' }, buyer.token),
+    'expired 一樣是狀態變更；要結案請走取消那條出口'
+  );
+
+  expectAllowed(
+    '維護中仍可取消（唯一的出口）',
+    await updateDoc(
+      `orders/${MAINT_B}`,
+      { status: 'rejected', lastActionBy: 'buyer' },
+      buyer.token
+    ),
+    '卡在一半、人可能已經在路上的使用者要能自己結案，否則只能乾等維護結束'
+  );
+
+  // 互評：拿一筆 owner 直接造好的 completed 訂單來試
+  const MAINT_C = 'order-maint-review';
+  await setDoc(
+    `orders/${MAINT_C}`,
+    { ...orderBase, status: 'completed', finalPrice: 100 },
+    'owner'
+  );
+  expectDenied(
+    '維護中不可互評',
+    await setDoc(
+      `reviews/${MAINT_C}_${buyer.uid}`,
+      { orderId: MAINT_C, raterId: buyer.uid, ratedId: seller.uid, stars: 5, createdAt: new Date() },
+      buyer.token
+    ),
+    '互評會觸發 onReviewCreated 去改 users 的評分彙總，維護期間資料不該再變動'
+  );
+
+  // 恢復營運：煞車放不掉的話，它本身就是另一種故障
+  await setDoc(
+    'settings/trade',
+    { enforceSafeHours: true, maintenance: false, updatedAt: new Date() },
+    'owner'
+  );
+  expectAllowed(
+    '關閉維護後立刻恢復發起交易',
+    await setDoc('orders/order-maint-after', orderBase, buyer.token),
+    'inMaintenance() 讀的是即時的 settings/trade，不需要重新部署規則'
   );
 
   /* ── 總結 ──────────────────────────────────────────────────── */

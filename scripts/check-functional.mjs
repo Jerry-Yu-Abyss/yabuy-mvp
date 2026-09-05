@@ -378,6 +378,18 @@ const CASES = [
       '倒退回掃碼畫面',
     runner: RUNNER.DUO,
   },
+  {
+    id: 'C-21',
+    area: 'C. 交易邏輯',
+    title: '交易功能維護中（管理端緊急煞車）',
+    expect:
+      '管理後台「用戶管理」分頁按下「🚧 緊急叫停」後 settings/trade.maintenance=true：' +
+      '所有使用者無法發起交易（交易彈窗出現維護告示、送出鈕 disabled），' +
+      '信箱與面交畫面出現維護告示，接受／婉拒／更改提案／安全交易／逾期關閉／' +
+      '推遲同意／互評全部按不動；只有取消 ✕ 還能按，且該次取消不會讓 cancelCount 增加。' +
+      '按「恢復營運」後全部立刻恢復。兩個方向的切換都寫入 audit_logs',
+    runner: RUNNER.DUO,
+  },
 
   /* ───── D. 資料庫互動 ───── */
   {
@@ -588,6 +600,7 @@ function checkBusinessConstants() {
     ['記次週期 30 天（Function）', 'functions/src/index.ts', /OFFENCE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],
     ['未回應記次下限 12 小時', 'functions/src/index.ts', /NO_REPLY_MIN_AGE_MS = 12 \* 60 \* 60 \* 1000/],
     ['取消上限 3 次（規則層）', 'firestore.rules', /cancelCount', 0\) >= 3/],
+    ['維護模式閘門（規則層）', 'firestore.rules', /maintenance', false\) == true/],
     ['推遲上限 24 小時', 'src/components/CannedChat.vue', /MAX_DELAY_MS = 24 \* 60 \* 60 \* 1000/],
   ];
   const bad = [];

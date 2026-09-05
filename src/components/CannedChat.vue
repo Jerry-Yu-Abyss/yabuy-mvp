@@ -25,8 +25,10 @@
               <div v-else-if="m.requestStatus === 'declined'" class="delay-card-result no">✕ 已婉拒，維持原時間</div>
               <div v-else-if="m.senderId === myUid" class="delay-card-result wait">⏳ 等待對方回覆</div>
               <div v-else class="delay-card-btns">
+                <!-- 婉拒只改 messages.requestStatus，沒碰訂單，維護中照樣放行：
+                     不然這張卡片會兩顆按鈕都按不下去，永遠掛在對話裡 -->
                 <button class="delay-btn-no" :disabled="sending" @click="respondDelay(m, false)">婉拒</button>
-                <button class="delay-btn-yes" :disabled="sending" @click="respondDelay(m, true)">同意推遲</button>
+                <button class="delay-btn-yes" :disabled="sending || tradeMaintenance" @click="respondDelay(m, true)">同意推遲</button>
               </div>
             </div>
           </div>
@@ -57,10 +59,10 @@
       <div class="canned-grid">
         <button
           class="canned-chip delay-chip"
-          :disabled="sending || myDelayUsed || order.status !== 'accepted'"
-          :title="myDelayUsed ? '推遲請求買賣雙方各限 1 次，你已經用過了' : ''"
+          :disabled="sending || myDelayUsed || tradeMaintenance || order.status !== 'accepted'"
+          :title="myDelayUsed ? '推遲請求買賣雙方各限 1 次，你已經用過了' : (tradeMaintenance ? '交易功能維護中，暫時無法推遲面交時間' : '')"
           @click="toggleDelayPanel"
-        >{{ myDelayUsed ? '⏰ 推遲次數已用完' : DELAY_LABEL }}</button>
+        >{{ tradeMaintenance ? '🚧 維護中暫停推遲' : (myDelayUsed ? '⏰ 推遲次數已用完' : DELAY_LABEL) }}</button>
         <button
           v-for="msg in CANNED_MESSAGES"
           :key="msg"
@@ -77,7 +79,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { auth } from '@/firebase';
 import { toast } from './toast.js';
-import { isTradeHourAllowed, enforceSafeHours, SAFE_HOUR_END, subscribeTradeSettings } from './tradeSettings.js';
+import { isTradeHourAllowed, enforceSafeHours, SAFE_HOUR_END, tradeMaintenance, subscribeTradeSettings } from './tradeSettings.js';
 import {
   CANNED_MESSAGES,
   DELAY_LABEL,

@@ -103,6 +103,24 @@
           </button>
         </div>
 
+        <!-- 🚧 交易功能維護中：系統出錯時的緊急煞車，放在最上面是因為要用到它的時候通常很急 -->
+        <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-maintenance': tradeMaintenance }">
+          <div class="claim-text">
+            <strong>🚧 交易功能維護中</strong>
+            <span>{{ tradeMaintenance
+              ? '🚧 維護中：全站無法發起或推進任何交易，只剩「取消」還能用（不佔額度）'
+              : '✅ 正常營運：交易功能全部開放' }}</span>
+          </div>
+          <button
+            class="btn-claim"
+            :class="{ 'btn-danger-toggle': !tradeMaintenance }"
+            :disabled="maintenanceToggleLoading"
+            @click="toggleMaintenance"
+          >
+            {{ maintenanceToggleLoading ? '處理中...' : (tradeMaintenance ? '恢復營運' : '緊急叫停') }}
+          </button>
+        </div>
+
         <!-- 🧪 交易時段限制開關：測試逾期／推遲時常需要在晚上造資料 -->
         <div v-if="isFounder" class="admin-claim-box settings-box" :class="{ 'is-off': !enforceSafeHours }">
           <div class="claim-text">
@@ -501,6 +519,7 @@ import Indicate from './Indicate.vue';
 import {
   enforceSafeHours, setEnforceSafeHours,
   simpleTradeMode, setSimpleTradeMode,
+  tradeMaintenance, setTradeMaintenance,
   subscribeTradeSettings
 } from './tradeSettings.js';
 
@@ -752,6 +771,50 @@ const runBackfill = async () => {
 };
 
 // 設為 / 取消其他用戶的管理員（創辦人或現有管理員可用）
+// ================= 🚧 交易功能維護中（緊急煞車） =================
+// 系統出錯時用的，不是測試開關：開啟後全站沒有人推得動任何一筆交易，
+// 發起、接受、協商、安全交易、掃碼、成交、逾期關閉、互評全部被
+// firestore.rules 的 inMaintenance() 擋在規則層（只擋前端的煞車，繞過前端
+// 就沒了）。唯一還開著的是「取消」——已經約好面交、人可能已經在路上的
+// 使用者要能自己結案，而且那次取消不佔 30 天 3 次的額度
+//（onOrderCancelled 會先讀 settings 再決定記不記）。
+//
+// 管理員自己不受限：orders.update 的 isAdmin() 分支在維護判斷之前就放行，
+// 維護期間仍然要有人進得去把壞掉的資料修好。
+const maintenanceToggleLoading = ref(false);
+
+const toggleMaintenance = async () => {
+  const turningOn = !tradeMaintenance.value;
+  const ok = await confirmDialog(
+    turningOn
+      ? '確定要叫停全站交易嗎？\n\n「所有使用者」都無法發起新交易，' +
+        '也無法接受、協商、按安全交易、成交或互評；進行中的訂單會原地凍結。\n\n' +
+        '只剩「取消」還能用，而且維護期間的取消不佔用取消額度。\n\n' +
+        '請只在系統出錯時使用，並盡快修復後恢復營運。'
+      : '確定要恢復營運嗎？\n\n交易功能會立刻全部開放，請先確認問題已經修好。'
+  );
+  if (!ok) return;
+
+  maintenanceToggleLoading.value = true;
+  try {
+    await setTradeMaintenance(turningOn, auth.currentUser?.uid);
+    await writeAuditLog(
+      'security',
+      turningOn ? '🚧 交易功能已緊急叫停' : '✅ 交易功能已恢復營運',
+      turningOn
+        ? '管理員開啟交易維護模式，全站無法發起或推進任何交易，僅保留取消（不計入取消額度）。'
+        : '管理員關閉交易維護模式，交易功能全部恢復。',
+      { level: turningOn ? 'warning' : 'normal' }
+    );
+    toast.success(turningOn ? '🚧 已叫停全站交易' : '✅ 交易功能已恢復');
+  } catch (e) {
+    console.error('[Admin] 切換交易維護模式失敗：', e.code, e.message);
+    toast('❌ 切換失敗，請重試。');
+  } finally {
+    maintenanceToggleLoading.value = false;
+  }
+};
+
 // ================= 🌟 交易時段限制開關 =================
 // 這條限制一直都只有前端在擋（firestore.rules 算不出時段——orders.time 是
 // 不含時區的字串），所以關掉的是「前端會不會擋」。因為它會即時影響所有使用
@@ -1280,6 +1343,8 @@ onUnmounted(() => {
 .btn-claim:disabled { background: #ccc; }
 .btn-danger-toggle { background: #c1440e; }
 .settings-box.is-off { background: #fff3ef; border-color: #ffccbc; }
+/* 維護中是全站停擺，配色要比「開關關掉」更強烈，掃一眼就知道現在不正常 */
+.settings-box.is-maintenance { background: #ffebee; border-color: #c1440e; }
 .backfill-box { border-color: #ffe0b2; background: #fffdf8; }
 .admin-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #fff; background: #5a9461; padding: 2px 8px; border-radius: 8px; vertical-align: middle; }
 .founder-chip { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 800; color: #7a5b00; background: linear-gradient(135deg, #ffe082, #ffca28); padding: 2px 8px; border-radius: 8px; vertical-align: middle; box-shadow: 0 1px 3px rgba(214,167,0,0.4); }

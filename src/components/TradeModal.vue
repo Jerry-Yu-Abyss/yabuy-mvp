@@ -21,6 +21,10 @@
       </div>
 
       <div class="sheet-body">
+        <p v-if="tradeMaintenance" class="maintenance-banner">
+          🚧 交易功能維護中，暫時無法發起新的交易。請稍後再試。
+        </p>
+
         <section class="input-section">
           <label class="section-label">約定交易時間</label>
           <div class="custom-input-box" :class="{ 'error-state': tradeInfo.time && !isTimeValid }">
@@ -55,7 +59,7 @@
       <footer class="sheet-footer">
         <button
           class="confirm-action-btn"
-          :disabled="isSending || showSuccess || !tradeInfo.time || !tradeInfo.location || !isTimeValid"
+          :disabled="isSending || showSuccess || tradeMaintenance || !tradeInfo.time || !tradeInfo.location || !isTimeValid"
           @click="handleSend"
         >
           {{ isSending ? '傳送中...' : (isTimeValid ? '發送預約請求' : '時間不符合規範') }}
@@ -76,7 +80,7 @@ import { auth, db } from '@/firebase';
 import { toast } from './toast.js';
 import { isAnyModalOpen, registerModalOpen, registerModalClose } from './modalState.js';
 import { blockUnverifiedForTrade } from './verify.js';
-import { enforceSafeHours, isTradeHourAllowed, subscribeTradeSettings } from './tradeSettings.js';
+import { enforceSafeHours, isTradeHourAllowed, tradeMaintenance, subscribeTradeSettings } from './tradeSettings.js';
 import { collection, addDoc, doc, getDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import SendSuccessAnimation from './SendSuccessAnimation.vue';
 
@@ -174,6 +178,13 @@ const sendTradeRequest = async () => {
     return;
   }
 
+  // 開關可能在填表單的途中被打開，所以送出前再看一次現值。真正的把關在
+  // firestore.rules 的 inMaintenance()，這裡只是給出人看得懂的理由。
+  if (tradeMaintenance.value) {
+    toast("🚧 交易功能維護中，暫時無法發起新的交易。");
+    return;
+  }
+
   const banReason = await expireBanReason(user.uid);
   if (banReason) {
     toast(`🚫 你在 30 天內已有 ${EXPIRE_LIMIT} 次${banReason}紀錄，暫時無法發起新交易。`);
@@ -245,6 +256,12 @@ const sendTradeRequest = async () => {
 .custom-input-box.error-state { border-color: #cf847d; background: #fff5f4; }
 .custom-input-box input { border: none; background: transparent; flex: 1; font-size: 16px; font-weight: 600; outline: none; color: #333; }
 .warning-text { font-size: 12px; color: #cf847d; font-weight: 700; margin: 8px 0 0 4px; }
+/* 維護告示要比一般提醒更搶眼：使用者按不下送出時，理由必須在同一個畫面上看得到 */
+.maintenance-banner {
+  background: #ffebee; border: 1px solid #c1440e; color: #c1440e;
+  border-radius: 12px; padding: 12px 14px; margin: 0 0 16px;
+  font-size: 13px; font-weight: 800; line-height: 1.5;
+}
 .location-flex { display: flex; flex-wrap: wrap; gap: 8px; }
 .location-chip { padding: 10px 18px; background: #f5f5f7; border-radius: 14px; border: none; font-size: 13px; font-weight: 700; color: #666; transition: 0.2s; cursor: pointer; }
 .location-chip.active { background: #333; color: #fff; transform: scale(1.05); }

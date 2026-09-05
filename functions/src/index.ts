@@ -502,6 +502,16 @@ export const onOrderCancelled = onDocumentUpdated(
     const uid = actor === "buyer" ? after.buyerId : after.sellerId;
     if (typeof uid !== "string" || !uid) return;
 
+    // 交易功能維護中的取消不計次：那不是使用者「決定不交易」，是系統把他推
+    // 出去的。維護期間取消是唯一還開著的出口（firestore.rules 的
+    // maintenanceAllows()），額度用完的人也得走得掉，前端因此一併拿掉額度檢查。
+    const settings = await admin.firestore()
+      .collection("settings").doc("trade").get();
+    if (settings.data()?.maintenance === true) {
+      console.log("維護中的取消不記次", event.params.orderId);
+      return;
+    }
+
     await bumpOffence(uid, "cancelCount", "cancelPeriodStart");
     console.log("取消記次", event.params.orderId, actor, uid);
   }

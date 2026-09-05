@@ -3,6 +3,11 @@
 
     <DealTimeline v-if="step !== 'done'" :step="step" />
 
+    <p v-if="tradeMaintenance" class="maintenance-banner">
+      🚧 交易功能維護中，面交流程暫停。這筆交易會停在現在這一步，等恢復後可以接著走；
+      不想再等的話，回信箱取消（維護期間取消不佔額度）。
+    </p>
+
     <div v-if="step === 'safe-wait'" class="deal-screen safe-wait-screen">
       <div class="screen-header" :class="{ 'no-timeline': false }">
         <button class="back-pill" @click="handleBack">← 返回</button>
@@ -29,7 +34,7 @@
       </div>
 
       <div class="arrive-action" v-if="!myReady">
-        <button class="btn-ready active" :disabled="actionBusy" @click="setReady">
+        <button class="btn-ready active" :disabled="frozen" @click="setReady">
           {{ actionBusy ? '送出中...' : '🔒 按下安全交易' }}
         </button>
       </div>
@@ -59,7 +64,7 @@
             <p class="manual-hint">或手動輸入交易點代碼</p>
             <div class="manual-row">
               <input v-model="manualCode" class="manual-input" placeholder="輸入交易點代碼" />
-              <button class="btn-manual-confirm" :disabled="actionBusy" @click="confirmManual">確認</button>
+              <button class="btn-manual-confirm" :disabled="frozen" @click="confirmManual">確認</button>
             </div>
           </div>
         </div>
@@ -131,7 +136,7 @@
 
         <button
           class="btn-submit-price"
-          :disabled="!finalPrice || finalPrice <= 0 || finalPrice > 10000 || submittingPrice"
+          :disabled="!finalPrice || finalPrice <= 0 || finalPrice > 10000 || submittingPrice || tradeMaintenance"
           @click="submitPrice"
         >
           <span v-if="submittingPrice" class="spinner"></span>
@@ -154,8 +159,8 @@
       </div>
 
       <div class="confirm-actions">
-        <button class="btn-deal reject" :disabled="actionBusy" @click="sellerConfirmPrice(false)">拒絕</button>
-        <button class="btn-deal accept" :disabled="actionBusy" @click="sellerConfirmPrice(true)">
+        <button class="btn-deal reject" :disabled="frozen" @click="sellerConfirmPrice(false)">拒絕</button>
+        <button class="btn-deal accept" :disabled="frozen" @click="sellerConfirmPrice(true)">
           {{ actionBusy ? '處理中...' : '確認成交 ✅' }}
         </button>
       </div>
@@ -198,7 +203,7 @@
           placeholder="想對平台反映什麼嗎？（選填）"
         ></textarea>
         <p class="rate-privacy">🔒 文字內容僅提供給平台管理方審閱，不會公開、也不會透露給對方。個人頁只會顯示星等平均。</p>
-        <button class="btn-rate" :disabled="ratingStars === 0 || ratingSubmitting" @click="submitRating">
+        <button class="btn-rate" :disabled="ratingStars === 0 || ratingSubmitting || tradeMaintenance" @click="submitRating">
           {{ ratingSubmitting ? '送出中...' : '送出評價' }}
         </button>
       </div>
@@ -216,7 +221,7 @@ import jsQR from 'jsqr';       // 掃描 QR（純 JS，iOS 也支援）：npm in
 import { db, auth } from '@/firebase';
 import { doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { codeForLocationName, nameForLocationCode } from './TradePoints.js';
-import { enforceQrScan, subscribeTradeSettings } from './tradeSettings.js';
+import { enforceQrScan, tradeMaintenance, subscribeTradeSettings } from './tradeSettings.js';
 import DealTimeline from './DealTimeline.vue';
 
 const props = defineProps({
@@ -235,6 +240,11 @@ const submittingPrice = ref(false);
 // 出價與評價本來就各自有 submittingPrice / ratingSubmitting，這支是給
 // 「安全交易確認、掃碼記錄、賣家確認成交」這幾個原本沒防護的寫入用。
 const actionBusy = ref(false);
+
+// 🚧 維護中面交流程整條停住：按下去也只會被 firestore.rules 的
+// maintenanceAllows() 擋回來（rejected 之外的狀態變更全擋），不如直接鎖住
+// 按鈕、把理由寫在畫面上。要結束這筆交易的話回信箱按取消。
+const frozen = computed(() => actionBusy.value || tradeMaintenance.value);
 const runOnce = async (fn) => {
   if (actionBusy.value) return;
   actionBusy.value = true;
@@ -779,6 +789,13 @@ const sellerConfirmPrice = (agree) => runOnce(async () => {
 .rate-privacy { font-size: 11px; color: #999; line-height: 1.5; margin: 0; text-align: center; }
 .btn-rate { background: #333; color: #fff; border: none; border-radius: 14px; padding: 12px 28px; font-size: 14px; font-weight: 800; cursor: pointer; }
 .btn-rate:disabled { background: #ccc; }
+
+/* 維護告示：面交每一步都掛在流程列下面，人在現場才知道為什麼按不動 */
+.maintenance-banner {
+  background: #ffebee; border: 1px solid #c1440e; color: #c1440e;
+  border-radius: 14px; padding: 12px 14px; margin: 12px 16px 0;
+  font-size: 12.5px; font-weight: 800; line-height: 1.6;
+}
 .rate-thanks { font-size: 15px; font-weight: 800; color: #3d7a45; margin-top: 4px; }
 
 .btn-submit-price {

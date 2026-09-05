@@ -17,6 +17,11 @@
     </header>
 
     <div class="message-list-area">
+      <p v-if="tradeMaintenance" class="maintenance-banner">
+        🚧 交易功能維護中。目前無法接受、協商、開始安全交易或結案，進行中的交易會停在原地。
+        如果不想再等，可以取消——維護期間的取消不佔用你的取消額度。
+      </p>
+
       <div v-if="loading" class="state-hint">
         <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
         <p>同步亞大交易資料...</p>
@@ -140,7 +145,7 @@
                 </div>
                 <button
                   class="btn-expire-close"
-                  :disabled="isOrderBusy(order.id)"
+                  :disabled="actionFrozen(order.id)"
                   @click="expireOrder(order)"
                 >⏰ 逾期關閉</button>
                 <p class="safe-trade-hint">
@@ -152,16 +157,16 @@
 
               <template v-if="activeTab === 'sell' && !isExpired(order)">
                 <div v-if="order.status === 'pending'" class="btn-group">
-                  <button class="btn-secondary" :disabled="isOrderBusy(order.id)" @click="rejectOrder(order)">婉拒</button>
-                  <button class="btn-outline" :disabled="isOrderBusy(order.id)" @click="startNegotiate(order)">更改提案</button>
-                  <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受</button>
+                  <button class="btn-secondary" :disabled="actionFrozen(order.id)" @click="rejectOrder(order)">婉拒</button>
+                  <button class="btn-outline" :disabled="actionFrozen(order.id)" @click="startNegotiate(order)">更改提案</button>
+                  <button class="btn-primary" :disabled="actionFrozen(order.id)" @click="acceptOrder(order)">接受</button>
                 </div>
 
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'buyer'" class="btn-group-column">
                   <div class="info-bubble buyer-offer">買家提出了新提案，請確認</div>
                   <div class="btn-group">
-                    <button class="btn-secondary" :disabled="isOrderBusy(order.id)" @click="rejectOrder(order)">婉拒</button>
-                    <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受方案</button>
+                    <button class="btn-secondary" :disabled="actionFrozen(order.id)" @click="rejectOrder(order)">婉拒</button>
+                    <button class="btn-primary" :disabled="actionFrozen(order.id)" @click="acceptOrder(order)">接受方案</button>
                   </div>
                 </div>
 
@@ -174,8 +179,8 @@
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'seller'" class="btn-group-column">
                   <div class="info-bubble seller-offer">賣家提議了新時間地點</div>
                   <div class="btn-group">
-                    <button class="btn-outline" :disabled="isOrderBusy(order.id)" @click="startNegotiate(order)">再改一次</button>
-                    <button class="btn-primary" :disabled="isOrderBusy(order.id)" @click="acceptOrder(order)">接受方案</button>
+                    <button class="btn-outline" :disabled="actionFrozen(order.id)" @click="startNegotiate(order)">再改一次</button>
+                    <button class="btn-primary" :disabled="actionFrozen(order.id)" @click="acceptOrder(order)">接受方案</button>
                   </div>
                 </div>
 
@@ -204,7 +209,7 @@
                       class="btn-confirm" 
                       :class="{ 'is-loading': order.isSubmitting }"
                       @click="submitNegotiate(order)" 
-                      :disabled="order.isSubmitting || !order.editLocation || !order.editTime"
+                      :disabled="order.isSubmitting || tradeMaintenance || !order.editLocation || !order.editTime"
                     >
                       {{ order.isSubmitting ? '傳送中...' : '送出新提案' }}
                     </button>
@@ -222,7 +227,7 @@
                 <template v-if="isExpired(order)">
                   <button
                     class="btn-expire-close"
-                    :disabled="isOrderBusy(order.id)"
+                    :disabled="actionFrozen(order.id)"
                     @click="expireOrder(order)"
                   >⏰ 逾期關閉</button>
                   <p class="safe-trade-hint">
@@ -241,7 +246,10 @@
                   >
                     {{ safeTradeBtnLabel(order) }}
                   </button>
-                  <p v-if="!canStartSafeTrade(order)" class="safe-trade-hint">
+                  <p v-if="tradeMaintenance" class="safe-trade-hint">
+                    🚧 交易功能維護中，安全交易暫停開放
+                  </p>
+                  <p v-else-if="!canStartSafeTrade(order)" class="safe-trade-hint">
                     🔒 約定時間前 10 分鐘（{{ safeTradeOpenText(order) }}）才會開放
                   </p>
                 </template>
@@ -275,6 +283,7 @@ import CannedChat from './CannedChat.vue';
 import { auth, db } from '@/firebase';
 import { collection, query, where, onSnapshot, orderBy, updateDoc, getDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+import { tradeMaintenance, subscribeTradeSettings } from './tradeSettings.js';
 
 const emit = defineEmits(['back-home']);
 const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院', '鳥籠', '感恩學院宿舍']; 
@@ -301,6 +310,11 @@ const hasMoreMsgs = computed(() => restMsgs.value.length > 0);
 // 物件，掛在上面的旗標會在寫入完成前就被洗掉。
 const busyOrderIds = ref(new Set());
 const isOrderBusy = (id) => busyOrderIds.value.has(id);
+
+// 🚧 維護中要鎖住的是「會推進交易狀態」的按鈕（接受／婉拒／改提案／安全交易／
+// 逾期關閉）。取消那顆 ✕ 刻意不走這裡：那是維護期間唯一還開著的出口，卡在
+// 一半的人要能自己結案。規則層的 maintenanceAllows() 是同一條界線。
+const actionFrozen = (id) => isOrderBusy(id) || tradeMaintenance.value;
 
 // 同一筆訂單同時間只跑一個寫入動作；重複點擊在寫入完成前會被直接忽略
 const runOrderAction = async (orderId, action) => {
@@ -442,7 +456,10 @@ const rejectOrder = (order) => runOrderAction(order.id, async () => {
 const canCancel = (order) => {
   // 逾期的訂單改走「逾期關閉」（另一組額度），這裡就不再出現取消。
   // 否則同一張卡片會有兩顆結果一樣、扣的額度卻不同的按鈕。
-  if (isExpired(order)) return false;
+  //
+  // 維護期間是例外：逾期關閉那顆也被凍結了，不把取消放回來的話，逾期的卡片
+  // 會變成完全沒有出口。這時取消不佔額度，兩顆按鈕扣的額度不同這個顧慮也不在。
+  if (isExpired(order)) return tradeMaintenance.value;
   if (order.status === 'accepted') return true;
   return activeTab.value === 'buy' && (order.status === 'pending' || order.status === 'negotiating');
 };
@@ -477,7 +494,9 @@ const cancelOrder = (order) => runOrderAction(order.id, async () => {
     console.error('[Mailbox] 讀取取消額度失敗，暫以尚有額度處理：', e.code, e.message);
   }
 
-  if (remaining <= 0) {
+  // 維護期間取消是唯一的出口，額度用完的人也得走得掉。這次取消也不會被記次
+  //（onOrderCancelled 會先讀 settings/trade 再決定記不記），所以連檢查都跳過。
+  if (!tradeMaintenance.value && remaining <= 0) {
     alert(`取消次數已達上限（30 天內 ${CANCEL_LIMIT} 次，買家與賣家身分共用額度），暫時無法取消，也無法發起新交易，請直接與對方協調或聯繫平台管理員。`);
     return;
   }
@@ -486,10 +505,12 @@ const cancelOrder = (order) => runOrderAction(order.id, async () => {
   const afterNote = asBuyer
     ? '取消後這筆交易會關閉，但您隨時可以回到商品頁重新發起。'
     : '取消後這筆交易會關閉，商品仍保留在您的賣場。';
+  const quotaNote = tradeMaintenance.value
+    ? '交易功能維護中，這次取消不會佔用你的取消額度。'
+    : `取消後剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次（30 天內，買賣共用）。` +
+      '額度用完的話，30 天內連新的交易也發起不了。';
   if (!confirm(
-    `確定要取消「${order.productName}」的交易嗎？\n\n${afterNote}\n\n` +
-    `取消後剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次（30 天內，買賣共用）。` +
-    `額度用完的話，30 天內連新的交易也發起不了。`
+    `確定要取消「${order.productName}」的交易嗎？\n\n${afterNote}\n\n${quotaNote}`
   )) return;
 
   try {
@@ -545,6 +566,8 @@ const canStartSafeTrade = (order) => {
   // 原本只有下界（提前 10 分鐘開放），約定時間過了三天按鈕照樣是開的。
   // 現在加上界：逾期之後就不再放人進場，改走逾期關閉或推遲協調。
   if (isExpired(order)) return false;
+  // 維護中連進場都不放：進去了也會被規則擋在 buyerReady 那一步
+  if (tradeMaintenance.value) return false;
   return nowTick.value >= t - SAFE_TRADE_WINDOW_MS;
 };
 
@@ -643,6 +666,7 @@ const goToSafeTrade = async (order) => {
 };
 
 onMounted(() => {
+  subscribeTradeSettings();
   onAuthStateChanged(auth, (user) => { if (user) initMailboxSync(); });
   nowTimer = setInterval(() => { nowTick.value = Date.now(); }, 15000);
 });
@@ -798,6 +822,14 @@ onUnmounted(() => {
 .btn-expire-close:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-expire-close:not(:disabled):active { background: #fff3ef; }
 .safe-trade-hint { margin: -4px 0 0; font-size: 11px; color: #999; font-weight: 700; text-align: center; }
+
+/* 維護告示：整個信箱最上面的一條，紅底是為了跟一般提示區隔——看到它就知道
+   現在按不動不是自己的問題 */
+.maintenance-banner {
+  background: #ffebee; border: 1px solid #c1440e; color: #c1440e;
+  border-radius: 14px; padding: 12px 14px; margin: 0 0 14px;
+  font-size: 12.5px; font-weight: 800; line-height: 1.6;
+}
 
 .price-summary { margin-top: 10px; font-size: 13px; font-weight: 800; color: #666; text-align: right; }
 .price-val { font-size: 18px; color: #2e7d32; margin-left: 6px; }
