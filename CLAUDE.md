@@ -48,4 +48,4 @@
 - **第三份檢查 `npm run check:trade`（87 項）需要 Firebase Emulator**：驗交易狀態機與安全規則，是唯一能用「第三個登入帳號」測隔離的一層。先 `npm run emu`（需 JDK）再跑；沒開 emulator 時 `check:code` 會自動 skip，不會擋 commit。第 9 節驗 Cloud Function 的逾期記次，要用 `npm run emu:fn`（含 functions emulator）才跑得到，只開 `emu` 會註記略過
 - Firestore 規則已版控（`firestore.rules`）；**Storage 規則尚未版控**，看不到現況，見 [[已知問題]]
 - 已知死碼：`Heart.vue`／`activeTab === 'heart'` 沒有任何按鈕會觸發，收藏功能改走 `User.vue` 的「喜愛」分頁
-- 4 支 Cloud Functions（`functions/src/index.ts`）：`addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`
+- 8 支 Cloud Functions（`functions/src/index.ts`）：callable 是 `addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`、`purgeProduct`（管理端刪商品時的連鎖刪除）；Firestore trigger 是 `onReviewCreated`、`onOrderExpired`、`onOrderCancelled`（後兩支負責記次）

@@ -390,6 +390,19 @@ const CASES = [
       '按「恢復營運」後全部立刻恢復。兩個方向的切換都寫入 audit_logs',
     runner: RUNNER.DUO,
   },
+  {
+    id: 'C-22',
+    area: 'C. 交易邏輯',
+    title: '管理端刪商品＝完全刪除（purgeProduct）',
+    expect:
+      '商品巡邏按下「確認下架」後，除了 products 那一份文件，還要連帶消失：' +
+      '所有人喜愛清單裡的該商品、這件商品的全部 orders（買賣雙方信箱、' +
+      '「已買入」與「已賣出」紀錄都不再出現，含已完成的成交）、以及那些訂單底下的' +
+      'messages 與 reviews；進行中的交易（pending／negotiating／accepted）的買家會' +
+      '收到一則系統通知。稽核紀錄與賣家的下架通知仍要留著。' +
+      '「一鍵清除某用戶的所有商品」走同一條路',
+    runner: RUNNER.DUO,
+  },
 
   /* ───── D. 資料庫互動 ───── */
   {

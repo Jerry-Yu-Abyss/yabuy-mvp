@@ -516,3 +516,124 @@ export const onOrderCancelled = onDocumentUpdated(
     console.log("取消記次", event.params.orderId, actor, uid);
   }
 );
+
+// ── 商品完全刪除（管理端商品巡邏）────────────────────────────────
+// 巡邏刪掉一件不合適的商品時，原本只刪 products 那一份文件，商品在系統其他
+// 地方留下的分身都還在：別人的喜愛清單、雙方信箱裡的訂單、「已買入」與「已賣出」
+// 的成交紀錄，都是各自獨立的文件，不會因為 products 少一份而跟著消失。使用者
+// 看到的就是一張點不進去的鬼卡片，管理員以為刪乾淨了其實沒有。
+//
+// 為什麼非得放伺服器端：這些文件的規則本來就不讓管理員動——favorites 只有本人
+// 讀得到、也只有本人刪得掉（管理員連列都列不出來），orders 更是誰都不能刪
+// （delete: if false）。要讓管理端刪得動，要嘛把規則放寬成「管理員可以刪任何人
+// 的收藏與訂單」再靠前端自律只在巡邏時用，要嘛集中在這支帶 Admin SDK 的
+// callable。選後者：權限只存在於這一支函式裡，範圍是「這個 productId 的相關
+// 文件」，沒有第二種用法。
+//
+// 稽核紀錄（audit_logs）刻意不刪：那是這次刪除本身的證據，刪掉就查不到是誰在
+// 什麼時候、用什麼理由刪的。
+export const purgeProduct = onCall(async (request) => {
+  const caller = request.auth;
+  if (!caller) {
+    throw new HttpsError("unauthenticated", "請先登入再操作。");
+  }
+  const callerIsFounder = (caller.token.email as string) === FOUNDER_EMAIL;
+  if (!(callerIsFounder || caller.token.admin === true)) {
+    throw new HttpsError("permission-denied", "只有管理員可以刪除商品。");
+  }
+
+  const data = (request.data || {}) as { productId?: string; reason?: string };
+  const productId = typeof data.productId === "string" ? data.productId : "";
+  if (!productId) {
+    throw new HttpsError("invalid-argument", "缺少 productId。");
+  }
+
+  const db = admin.firestore();
+  const productRef = db.collection("products").doc(productId);
+  const productSnap = await productRef.get();
+  const product = productSnap.data() || {};
+  const productName = (product.name as string) || "商品";
+
+  const [favSnap, orderSnap] = await Promise.all([
+    db.collection("favorites").where("productId", "==", productId).get(),
+    db.collection("orders").where("productId", "==", productId).get(),
+  ]);
+
+  // 訊息與評價掛在訂單上，不是掛在商品上，所以要先知道有哪些訂單才查得到。
+  // 「in」查詢一次最多 30 個值，訂單多的商品要分批問。
+  const orderIds = orderSnap.docs.map((d) => d.id);
+  const chunks: string[][] = [];
+  for (let i = 0; i < orderIds.length; i += 30) {
+    chunks.push(orderIds.slice(i, i + 30));
+  }
+  const linked = await Promise.all(chunks.flatMap((ids) => [
+    db.collection("messages").where("orderId", "in", ids).get(),
+    db.collection("reviews").where("orderId", "in", ids).get(),
+  ]));
+
+  const writer = db.bulkWriter();
+
+  // BulkWriter 預設會吞掉最後失敗的那幾筆，而「以為刪乾淨了、其實沒有」正是
+  // 這支函式要解決的問題。重試三次仍失敗就記下來，最後整批回報成錯誤。
+  const failures: string[] = [];
+  writer.onWriteError((err) => {
+    if (err.failedAttempts < 3) return true;
+    failures.push(err.documentRef.path);
+    return false;
+  });
+
+  let linkedCount = 0;
+  linked.forEach((snap) => snap.docs.forEach((d) => {
+    linkedCount++;
+    writer.delete(d.ref);
+  }));
+  favSnap.docs.forEach((d) => writer.delete(d.ref));
+  orderSnap.docs.forEach((d) => writer.delete(d.ref));
+  writer.delete(productRef);
+
+  // 還沒走完的交易被連帶刪掉時要告訴買家一聲。約好的面交突然從信箱消失、
+  // 人卻還準備赴約，比商品被下架本身更難處理。已完成／已取消的就不再打擾。
+  const LIVE = ["pending", "negotiating", "accepted"];
+  const affectedBuyers = new Set<string>();
+  orderSnap.docs.forEach((d) => {
+    const o = d.data();
+    if (LIVE.includes(o.status) && typeof o.buyerId === "string" && o.buyerId) {
+      affectedBuyers.add(o.buyerId);
+    }
+  });
+  const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+  affectedBuyers.forEach((uid) => {
+    writer.create(db.collection("notifications").doc(), {
+      type: "warning",
+      title: `交易已取消：${productName}`,
+      content: `您預約的商品「${productName}」已被管理員移除，這筆交易已同時取消。` +
+        (reason ? `\n📌 移除原因：${reason}` : "") +
+        "\n這次取消不會計入您的取消額度，也不會留下爽約紀錄。",
+      target: uid,
+      sender: "YaBuy 管理團隊",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  await writer.close();
+
+  if (failures.length) {
+    console.error("商品刪除有殘留", productId, failures);
+    const sample = failures.slice(0, 3).join("、");
+    throw new HttpsError(
+      "internal",
+      `有 ${failures.length} 份關聯資料沒刪成功（${sample}），請重試一次。`,
+    );
+  }
+
+  const result = {
+    productName,
+    sellerId: (product.sellerId as string) || "",
+    favorites: favSnap.size,
+    orders: orderSnap.size,
+    linked: linkedCount,
+    notifiedBuyers: affectedBuyers.size,
+  };
+  console.log("商品完全刪除", productId, result);
+  return result;
+});

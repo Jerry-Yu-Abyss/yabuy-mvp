@@ -491,6 +491,11 @@
               <span class="badge">下架目標</span>
               <strong>{{ productToDelete?.name }}</strong>
             </div>
+            <p class="delete-scope-note">
+              下架＝完全刪除：這件商品會從所有人的<strong>喜愛清單</strong>、雙方信箱的<strong>訂單</strong>，
+              以及<strong>已買入／已賣出</strong>紀錄中一併消失（含已完成的成交，排行榜與流通件數會跟著減少）。
+              進行中的交易會被取消並通知買家。此操作不可逆。
+            </p>
             <div class="form-group">
               <label>請輸入下架理由 (將私訊傳送給賣家)</label>
               <textarea v-model="deleteReason" placeholder="例如：含有違規內容、圖片不符、重複上架..." rows="4" class="admin-textarea" autofocus></textarea>
@@ -607,11 +612,23 @@ const isDeleting = ref(false);
 
 const openDeleteModal = (item) => { productToDelete.value = item; deleteReason.value = ''; showDeleteModal.value = true; };
 
+// 下架＝完全刪除。只刪 products 那一份文件的話，商品的分身還留在別人的喜愛
+// 清單、雙方信箱的訂單、以及「已買入／已賣出」的成交紀錄裡——那些都是獨立的
+// 文件，不會跟著消失。實際的連鎖刪除在 Cloud Function purgeProduct：favorites
+// 與 orders 的規則本來就不讓管理員動（收藏只有本人能刪、訂單誰都不能刪），
+// 只有 Admin SDK 碰得到。
+//
+// 賣家的下架通知與稽核紀錄仍留在這裡寫：那是「這次下架」本身的紀錄，跟被刪掉
+// 的商品資料不同，不該由同一支函式順手處理。
 const confirmDelete = async () => {
   if (!deleteReason.value.trim()) return;
   isDeleting.value = true;
   try {
-    await deleteDoc(doc(db, "products", productToDelete.value.id));
+    const purge = httpsCallable(functions, 'purgeProduct');
+    const { data: purged } = await purge({
+      productId: productToDelete.value.id,
+      reason: deleteReason.value.trim()
+    });
     await addDoc(collection(db, "notifications"), {
       type: 'warning',
       title: `商品下架通知：${productToDelete.value.name}`,
@@ -621,10 +638,18 @@ const confirmDelete = async () => {
       createdAt: serverTimestamp()
     });
     
-    await writeAuditLog('admin', '強制商品下架', `管理員強制下架了商品「${productToDelete.value.name}」。原因：${deleteReason.value}`, { sellerId: productToDelete.value.sellerId, productId: productToDelete.value.id });
-    toast("✅ 商品已成功下架！");
+    await writeAuditLog(
+      'admin',
+      '強制商品下架',
+      `管理員強制下架了商品「${productToDelete.value.name}」。原因：${deleteReason.value}
+` +
+      `連帶刪除：收藏 ${purged.favorites} 筆、訂單 ${purged.orders} 筆、` +
+      `訊息與評價 ${purged.linked} 筆；通知了 ${purged.notifiedBuyers} 位交易中的買家。`,
+      { sellerId: productToDelete.value.sellerId, productId: productToDelete.value.id }
+    );
+    toast(`✅ 已完全刪除！連帶清掉收藏 ${purged.favorites} 筆、訂單 ${purged.orders} 筆。`);
     showDeleteModal.value = false;
-  } catch (error) { toast("❌ 操作失敗：" + error.message); } 
+  } catch (error) { toast("❌ 操作失敗：" + (error.message || error)); } 
   finally { isDeleting.value = false; productToDelete.value = null; }
 };
 
@@ -664,14 +689,26 @@ const toggleBlacklist = async (user) => {
 // 一鍵清除商品
 const purgeUserData = async (user) => {
   const userName = user.displayName || '此用戶';
-  if (!(await confirmDialog(`⚠️ 警告：確定要清除「${userName}」的所有上架商品嗎？\n這將會瞬間刪除他正在架上的所有商品。\n(帳號本身會保留，方便您後續控制停權狀態)\n\n注意：商品刪除後不可逆！`))) return;
+  if (!(await confirmDialog(`⚠️ 警告：確定要清除「${userName}」的所有上架商品嗎？\n這會完全刪除他架上的每一件商品——連同所有人的喜愛清單、雙方信箱的訂單，以及已買入／已賣出紀錄（含已完成的成交）。\n(帳號本身會保留，方便您後續控制停權狀態)\n\n注意：商品刪除後不可逆！`))) return;
   try {
+    // 走與巡邏下架同一支 purgeProduct：這裡刪的是同一種東西，沒有理由一邊
+    // 連帶清乾淨、一邊留下一地收藏與訂單的殘影。一件一件呼叫是因為連鎖刪除
+    // 的範圍本來就是「一個 productId」，批次化只會讓失敗時分不清是哪一件。
     const qProducts = query(collection(db, "products"), where("sellerId", "==", user.id));
     const snapProducts = await getDocs(qProducts);
-    const deletePromises = snapProducts.docs.map(productDoc => deleteDoc(doc(db, "products", productDoc.id)));
-    await Promise.all(deletePromises);
+    const purge = httpsCallable(functions, 'purgeProduct');
+    let favorites = 0;
+    let orders = 0;
+    for (const productDoc of snapProducts.docs) {
+      const { data: purged } = await purge({
+        productId: productDoc.id,
+        reason: `管理員清除了賣家「${userName}」的所有上架商品`
+      });
+      favorites += purged.favorites;
+      orders += purged.orders;
+    }
 
-    await writeAuditLog('admin', '用戶資料大量強制清除', `管理員一鍵清空了用戶「${userName}」在架上的所有二手商品 (共 ${snapProducts.docs.length} 件)。`, { targetUserId: user.id });
+    await writeAuditLog('admin', '用戶資料大量強制清除', `管理員一鍵清空了用戶「${userName}」在架上的所有二手商品 (共 ${snapProducts.docs.length} 件)，連帶刪除收藏 ${favorites} 筆、訂單 ${orders} 筆。`, { targetUserId: user.id });
     toast(`✅ 已成功清除該用戶的 ${snapProducts.docs.length} 件商品！`);
   } catch (error) { toast("❌ 清除失敗：" + error.message); }
 };
@@ -1342,6 +1379,12 @@ onUnmounted(() => {
 .btn-claim { flex-shrink: 0; background: #333; color: #fff; border: none; border-radius: 12px; padding: 10px 16px; font-size: 13px; font-weight: 800; cursor: pointer; }
 .btn-claim:disabled { background: #ccc; }
 .btn-danger-toggle { background: #c1440e; }
+/* 刪除範圍說明：這顆按鈕的後果比「下架」兩個字大得多，要在按之前就講完 */
+.delete-scope-note {
+  background: #fff3ef; border: 1px solid #ffccbc; color: #8c3b12;
+  border-radius: 10px; padding: 10px 12px; margin: 0 0 14px;
+  font-size: 12px; font-weight: 700; line-height: 1.7;
+}
 .settings-box.is-off { background: #fff3ef; border-color: #ffccbc; }
 /* 維護中是全站停擺，配色要比「開關關掉」更強烈，掃一眼就知道現在不正常 */
 .settings-box.is-maintenance { background: #ffebee; border-color: #c1440e; }
