@@ -11,6 +11,13 @@
           </button>
         </div>
         
+        <div v-if="showBounceWarning" class="bounce-banner">
+          <span>⚠️ 這個信箱收不到我們的信，寄出的驗證信被退回了</span>
+          <button type="button" class="banner-link" @click="toggleEmailChange">
+            {{ showEmailChange ? '取消' : '換一個信箱' }}
+          </button>
+        </div>
+
         <div v-if="showVerifyBanner" class="verify-banner">
           <span>📩 您的電子郵件尚未驗證</span>
           <button type="button" @click="handleResendVerification" :disabled="resendingVerify">
@@ -22,7 +29,11 @@
         </div>
 
         <!-- 改信箱：信箱打錯的使用者唯一的自救路徑（詳見 verify.js requestEmailChange） -->
-        <form v-if="showVerifyBanner && showEmailChange" class="email-change" @submit.prevent="handleEmailChange">
+        <form
+          v-if="(showVerifyBanner || showBounceWarning) && showEmailChange"
+          class="email-change"
+          @submit.prevent="handleEmailChange"
+        >
           <p class="email-change-hint">
             目前的信箱是 <b>{{ currentEmail }}</b>。<br />
             確認信會寄到新信箱，點了信中連結才會真的更改，打錯不會有影響。
@@ -506,6 +517,13 @@ const changePasswordInput = ref('');
 const changingEmail = ref(false);
 const currentEmail = computed(() => auth.currentUser?.email || '');
 
+// resendWebhook 標記的硬退信信箱。它存的是「退信的那個位址」而不是布林值，
+// 所以使用者改掉信箱後就自動對不上、警告自己消失，不需要任何人去清旗標。
+const bouncedEmail = ref('');
+const showBounceWarning = computed(
+  () => !!bouncedEmail.value && emailsMatch(bouncedEmail.value, currentEmail.value)
+);
+
 // 新信箱一樣要過打錯網域的提示 —— 會走到這裡的人就是上次打錯的人。
 const newEmailSuggestion = computed(() => suggestEmailDomain(newEmailInput.value));
 const applyNewEmailSuggestion = () => {
@@ -822,9 +840,11 @@ const fetchMyRating = async () => {
     const count = Number(d.ratingCount) || 0;
     const sum = Number(d.ratingSum) || 0;
     myRating.value = count > 0 ? { avg: sum / count, count } : { avg: 0, count: 0 };
+    bouncedEmail.value = d.mailBouncedFor || '';
   } catch (e) {
     console.error('[User] 讀取評價失敗：', e);
     myRating.value = { avg: 0, count: 0 };
+    bouncedEmail.value = '';
   }
 };
 
@@ -843,6 +863,7 @@ watch(() => props.user, (newVal) => {
     myFavorites.value = [];
     selectedProduct.value = null;
     myRating.value = { avg: 0, count: 0 };
+    bouncedEmail.value = '';
   }
 }, { immediate: true });
 
@@ -1157,6 +1178,13 @@ const removeFavorite = async (fav) => {
 }
 
 /* ── 信箱未驗證提示 ── */
+.bounce-banner {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 6px;
+  margin: 0 0 8px; padding: 10px 12px; border-radius: 12px;
+  background: #fdeceb; color: #a5352c; font-size: 13px; font-weight: 700;
+}
+.bounce-banner .banner-link { color: #a5352c; }
 .verify-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: rgba(242, 217, 140, 0.25); border: 1px solid rgba(242, 217, 140, 0.6);

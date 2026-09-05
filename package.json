@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "dev:emu": "vite --mode emulator",
     "emu": "firebase emulators:start --only auth,firestore --project yabuy-2026a",
-    "emu:fn": "npm --prefix functions run build && firebase emulators:start --only auth,firestore,functions --project yabuy-2026a",
+    "emu:fn": "npm --prefix functions run build && firebase emulators:start --only auth,firestore,functions,pubsub --project yabuy-2026a",
     "emu:seed": "node scripts/seed-emulator.mjs",
     "check": "npm run check:code && npm run check:prod",
     "check:code": "node scripts/check-known-bugs.mjs --local && node scripts/check-functional.mjs --local && node scripts/check-trade-flow.mjs --skip-if-down",

@@ -2,11 +2,14 @@
 // 管理員 Custom Claim 設定。創辦人可把任何人設為/取消管理員；其他現有管理員亦可。
 // firebase-functions v2 + TypeScript
 
-import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {
   onDocumentCreated,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
+import {onSchedule} from "firebase-functions/v2/scheduler";
+import {defineSecret} from "firebase-functions/params";
+import * as crypto from "node:crypto";
 import * as admin from "firebase-admin";
 import {FieldValue} from "firebase-admin/firestore";
 
@@ -637,3 +640,266 @@ export const purgeProduct = onCall(async (request) => {
   console.log("商品完全刪除", productId, result);
   return result;
 });
+
+// ── 清理「打錯信箱」留下的空殼帳號 ──────────────────────────────
+// 背景：Firebase 只驗信箱格式不驗存在。使用者把網域打錯照樣註冊成功，驗證信
+// 寄向一個收不到的位址，帳號就永遠停在未驗證：不能交易、不能上架，使用者只能
+// 重辦一個，而那份空殼會一直佔著那個信箱位址——真正擁有它的人日後想註冊就會
+// 撞 auth/email-already-in-use。前端已加了打錯提示與改信箱的自救路徑，這支負責
+// 收拾在那之前、以及未來仍然會漏掉的殘留。
+//
+// 判定刻意保守。刪帳號不可逆，寧可漏掉幾個空殼，也不能誤刪一個還在用的人：
+//   - 只碰純密碼帳號（Google 登入的信箱由 Google 驗過，不會卡在未驗證）
+//   - 建立時間與最後登入時間都要超過門檻（還會回來的人不算沉睡）
+//   - 管理員、創辦人一律跳過
+//   - 商品、訂單、收藏任一有紀錄就跳過。收藏本身不能證明什麼，但那代表這個人
+//     真的用過 App，刪掉會弄丟他的清單——在不可逆的操作上，這種模糊地帶一律
+//     算「有活動」
+const STALE_DAYS = 30;
+const STALE_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
+
+type StaleUser = { uid: string; email: string; createdAt: string };
+
+// 這個人在系統裡留下過任何東西嗎？有就不是空殼，不能刪。
+const hasAnyActivity = async (uid: string): Promise<boolean> => {
+  const db = admin.firestore();
+  const probes = await Promise.all([
+    db.collection("products").where("sellerId", "==", uid).limit(1).get(),
+    db.collection("orders").where("buyerId", "==", uid).limit(1).get(),
+    db.collection("orders").where("sellerId", "==", uid).limit(1).get(),
+    db.collection("favorites").where("userId", "==", uid).limit(1).get(),
+  ]);
+  return probes.some((snap) => !snap.empty);
+};
+
+const scanStaleUnverified = async (cutoffMs: number): Promise<StaleUser[]> => {
+  const found: StaleUser[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const page = await admin.auth().listUsers(1000, pageToken);
+    pageToken = page.pageToken;
+
+    for (const u of page.users) {
+      if (u.emailVerified) continue;
+      if (u.email === FOUNDER_EMAIL) continue;
+
+      const claims = u.customClaims || {};
+      if (claims.admin === true || claims.founder === true) continue;
+
+      const providers = u.providerData.map((p) => p.providerId);
+      if (providers.some((id) => id !== "password")) continue;
+
+      const created = Date.parse(u.metadata.creationTime || "");
+      if (!Number.isFinite(created) || created > cutoffMs) continue;
+
+      // lastSignInTime 在「註冊完就沒再回來」時等於註冊時間，不會是空的；
+      // 真的解析不出來時當作沒登入過（用建立時間判定），不因此放行。
+      const lastSignIn = Date.parse(u.metadata.lastSignInTime || "");
+      if (Number.isFinite(lastSignIn) && lastSignIn > cutoffMs) continue;
+
+      if (await hasAnyActivity(u.uid)) continue;
+
+      found.push({
+        uid: u.uid,
+        email: u.email || "",
+        createdAt: u.metadata.creationTime || "",
+      });
+    }
+  } while (pageToken);
+
+  return found;
+};
+
+// 先刪 Auth 再刪 users 文件。順序是刻意的：真正佔著信箱位址的是 Auth 帳號，
+// 先拿掉它，就算第二步失敗，留下的孤兒文件也只是垃圾，不會擋住任何人註冊。
+// 反過來的話，users 文件刪了而 Auth 沒刪，使用者下次登入 upsertUserDoc 會把它
+// 補回來，等於白做一場。
+const purgeOne = async (uid: string): Promise<void> => {
+  await admin.auth().deleteUser(uid);
+  await admin.firestore().collection("users").doc(uid).delete();
+};
+
+export const purgeStaleUnverifiedUsers = onSchedule(
+  {schedule: "30 4 * * *", timeZone: "Asia/Taipei"},
+  async () => {
+    const cutoff = Date.now() - STALE_MS;
+    const stale = await scanStaleUnverified(cutoff);
+    if (!stale.length) {
+      console.log("沒有需要清理的未驗證帳號");
+      return;
+    }
+
+    const purged: string[] = [];
+    const failed: string[] = [];
+    for (const u of stale) {
+      try {
+        await purgeOne(u.uid);
+        purged.push(u.email || u.uid);
+      } catch (err) {
+        console.error("清理失敗", u.uid, err);
+        failed.push(u.email || u.uid);
+      }
+    }
+
+    // 稽核紀錄是這次刪除唯一的證據——帳號刪掉後就再也查不到刪了誰。
+    // 信箱只留前 50 筆，避免單一文件在異常大量時撐爆 1MB 上限。
+    await admin.firestore().collection("audit_logs").add({
+      category: "admin",
+      title: `系統清理 ${purged.length} 個未驗證空殼帳號`,
+      content: `註冊超過 ${STALE_DAYS} 天仍未驗證、且沒有任何商品／訂單／收藏` +
+        `紀錄的帳號。\n已刪除：${purged.slice(0, 50).join("、") || "無"}` +
+        (purged.length > 50 ? `（另有 ${purged.length - 50} 筆未列出）` : "") +
+        (failed.length ? `\n刪除失敗：${failed.join("、")}` : ""),
+      operatorId: "SYSTEM",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    console.log("清理未驗證帳號", {
+      purged: purged.length,
+      failed: failed.length,
+    });
+  },
+);
+
+// 排程版的試跑。清理是不可逆的，上線前總得先看清楚它到底會刪掉誰；這支只掃描
+// 不刪除，掃描條件與排程共用同一份程式碼，不會看到一套、刪的卻是另一套。
+export const previewStaleUnverifiedUsers = onCall(async (request) => {
+  const caller = request.auth;
+  if (!caller) {
+    throw new HttpsError("unauthenticated", "請先登入再操作。");
+  }
+  if ((caller.token.email as string) !== FOUNDER_EMAIL) {
+    throw new HttpsError("permission-denied", "只有創辦人可以執行試跑。");
+  }
+
+  const data = (request.data || {}) as { days?: number };
+  const days = typeof data.days === "number" && data.days > 0 ?
+    data.days :
+    STALE_DAYS;
+  const stale = await scanStaleUnverified(Date.now() - days * 86400000);
+
+  return {days, count: stale.length, users: stale.slice(0, 200)};
+});
+
+// ── Resend 退信 webhook ─────────────────────────────────────────
+// 為什麼需要：寄信管道 Resend 底層跑在 Amazon SES 上（SPF 是
+// include:amazonses.com）。SES 對硬退信率很敏感，超標會限制甚至停用整個網域的
+// 寄件權限。使用者打錯信箱造成的退信會一筆一筆累積，而在此之前我們對這件事
+// 完全沒有能見度——等到發現時，通常已經是「連正常使用者的驗證信也開始進垃圾
+// 桶」。
+//
+// 這支做兩件事：把事件記下來（看得到退信率），以及把退信的信箱標記到該使用者
+// 身上，讓 App 能主動告訴他「這個信箱收不到信」，接到已經做好的改信箱流程。
+//
+// 標記存的是「退信的那個信箱位址」而不是布林值。使用者改掉信箱後位址就對不上
+// 了，警告自動消失——不需要任何人記得去清這個旗標，也就不會有清不掉的殘留。
+const RESEND_WEBHOOK_SECRET = defineSecret("RESEND_WEBHOOK_SECRET");
+
+// Resend 的 webhook 走 Svix 簽章。驗簽是這支函式的全部安全性所在：沒有它，
+// 任何人都能 POST 進來把別人的信箱標記成退信，或灌爆統計數字。
+const verifySvix = (
+  secret: string,
+  headers: Record<string, string | undefined>,
+  rawBody: Buffer,
+): boolean => {
+  const id = headers["svix-id"];
+  const timestamp = headers["svix-timestamp"];
+  const signatures = headers["svix-signature"];
+  if (!id || !timestamp || !signatures) return false;
+
+  // 重放保護：舊的請求連同它當初的合法簽章一起重送，簽章是驗得過的。
+  const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+  if (!Number.isFinite(age) || age > 300) return false;
+
+  const key = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
+  const expected = crypto.createHmac("sha256", key)
+    .update(`${id}.${timestamp}.${rawBody.toString("utf8")}`)
+    .digest();
+
+  // 標頭可能同時帶多把金鑰的簽章（輪替期間），有一個對得上就算通過。
+  return signatures.split(" ").some((entry) => {
+    const [version, value] = entry.split(",");
+    if (version !== "v1" || !value) return false;
+    const given = Buffer.from(value, "base64");
+    if (given.length !== expected.length) return false;
+    return crypto.timingSafeEqual(given, expected);
+  });
+};
+
+// 硬退信＝這個位址不存在，收件端明確拒絕，重寄幾次都一樣。
+// 軟退信（信箱滿了、暫時性錯誤）不標記使用者，只記事件。
+const HARD_BOUNCE = ["hard_bounce", "hardbounce", "permanent"];
+
+export const resendWebhook = onRequest(
+  {secrets: [RESEND_WEBHOOK_SECRET], cors: false},
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).send("Method Not Allowed");
+      return;
+    }
+
+    const ok = verifySvix(
+      RESEND_WEBHOOK_SECRET.value(),
+      req.headers as Record<string, string | undefined>,
+      req.rawBody,
+    );
+    if (!ok) {
+      console.warn("Resend webhook 驗簽失敗");
+      res.status(401).send("Invalid signature");
+      return;
+    }
+
+    const body = (req.body || {}) as {
+      type?: string;
+      data?: {
+        email_id?: string;
+        to?: string[];
+        subject?: string;
+        bounce?: { type?: string; message?: string };
+      };
+    };
+    const type = body.type || "";
+    const data = body.data || {};
+    const email = (data.to || [])[0] || "";
+    const db = admin.firestore();
+
+    // 每天一份彙總，退信率看的是趨勢而不是單筆。文件 id 用日期，不必額外查詢
+    // 就能直接讀某一天。
+    const day = new Date().toISOString().slice(0, 10);
+    const metric = type.replace("email.", "") || "unknown";
+    await db.collection("mail_stats").doc(day).set({
+      [metric]: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    await db.collection("mail_events").add({
+      type,
+      email,
+      emailId: data.email_id || "",
+      subject: data.subject || "",
+      bounceType: data.bounce?.type || "",
+      reason: data.bounce?.message || "",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    const bounceType = (data.bounce?.type || "").toLowerCase();
+    if (type === "email.bounced" && email && HARD_BOUNCE.includes(bounceType)) {
+      try {
+        const user = await admin.auth().getUserByEmail(email);
+        await db.collection("users").doc(user.uid).set({
+          mailBouncedFor: email,
+          mailBouncedAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        console.log("標記硬退信", email, user.uid);
+      } catch (err) {
+        // 找不到對應帳號很正常：帳號可能已被清理，或收件人根本不是使用者。
+        console.log("退信的信箱沒有對應帳號", email);
+      }
+    }
+
+    // 一律回 200。Resend 收到非 2xx 會重送，而這裡的失敗多半重送也不會好，
+    // 只會把同一筆事件重複寫進統計。驗簽失敗是唯一例外，那要讓對方知道。
+    res.status(200).send("ok");
+  },
+);

@@ -47,7 +47,8 @@ service cloud.firestore {
       allow create: if request.auth != null && request.auth.uid == uid
         && !request.resource.data.keys().hasAny(['expireCount', 'expirePeriodStart',
                                                  'noReplyCount', 'noReplyPeriodStart',
-                                                 'cancelCount', 'cancelPeriodStart']);
+                                                 'cancelCount', 'cancelPeriodStart',
+                                                 'mailBouncedFor', 'mailBouncedAt']);
 
       // 更新規則：兩種情況之一才允許
       //
@@ -65,7 +66,8 @@ service cloud.firestore {
                 .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount',
                          'expireCount', 'expirePeriodStart',
                          'noReplyCount', 'noReplyPeriodStart',
-                         'cancelCount', 'cancelPeriodStart'])
+                         'cancelCount', 'cancelPeriodStart',
+                         'mailBouncedFor', 'mailBouncedAt'])
         )
         // (2) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
         || (
@@ -364,6 +366,18 @@ service cloud.firestore {
     match /settings/{docId} {
       allow read: if request.auth != null;
       allow write: if isAdmin();
+    }
+
+    // 寄信事件與每日彙總：由 resendWebhook 以 Admin SDK 寫入（繞過規則），
+    // 前端一律不可寫。開放管理員讀取，退信率要看得到才有意義——這兩個
+    // collection 存在的目的就是讓人發現「網域寄件信譽正在惡化」。
+    match /mail_events/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /mail_stats/{day} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     // 廣告投放：首頁未登入也看得到（跟 products 一樣公開可讀），
