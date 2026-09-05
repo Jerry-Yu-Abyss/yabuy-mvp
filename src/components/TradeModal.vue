@@ -93,17 +93,18 @@ const isSending = ref(false);   // 送出中：擋住重複點擊，同時讓按
 
 const locations = ['圖書館', '美術館', '築夢學院宿舍', '管理學院', '鳥籠', '感恩學院宿舍'];
 
-// 逾期爽約閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動恢復。
-// 次數由 Cloud Function onOrderExpired 寫入，firestore.rules 的
-// notExpireBanned() 也會擋一次——這裡只是為了給出人看得懂的理由，
-// 少了這段使用者只會拿到一句無來由的 permission-denied。
+// 發起交易的閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動恢復。
+// 次數由 Cloud Function 寫入（onOrderExpired 記爽約與未回應、onOrderCancelled
+// 記主動取消），firestore.rules 的 notTradeBanned() 也會擋一次——這裡只是為了
+// 給出人看得懂的理由，少了這段使用者只會拿到一句無來由的 permission-denied。
 const EXPIRE_LIMIT = 3;
 const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
-// 兩種紀錄分開計數、各自 3 次，踩到任一條都擋。回傳擋下的理由，null 表示放行。
+// 三種紀錄分開計數、各自 3 次，踩到任一條都擋。回傳擋下的理由，null 表示放行。
 const OFFENCES = [
   { count: 'expireCount', start: 'expirePeriodStart', label: '面交爽約' },
-  { count: 'noReplyCount', start: 'noReplyPeriodStart', label: '未回應交易請求' }
+  { count: 'noReplyCount', start: 'noReplyPeriodStart', label: '未回應交易請求' },
+  { count: 'cancelCount', start: 'cancelPeriodStart', label: '主動取消交易' }
 ];
 
 const expireBanReason = async (uid) => {

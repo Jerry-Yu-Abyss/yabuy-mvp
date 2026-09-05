@@ -273,7 +273,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import DealPage from './Deal.vue';
 import CannedChat from './CannedChat.vue';
 import { auth, db } from '@/firebase';
-import { collection, query, where, onSnapshot, orderBy, updateDoc, getDoc, doc, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, updateDoc, getDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
 const emit = defineEmits(['back-home']);
@@ -295,7 +295,8 @@ const restMsgs    = computed(() => systemMessages.value.slice(1));
 const hasMoreMsgs = computed(() => restMsgs.value.length > 0);
 
 // 🌟 防連點：網路慢的時候使用者會連按好幾下，同一筆訂單被重複送出。
-// 影響最大的是取消——cancelCount 用 increment(1) 累加，連按兩下會一次扣掉兩次額度。
+// 取消的重複扣額度已經由 onOrderCancelled 自己擋掉（它只在 status 真的從別的狀態
+// 轉成 rejected 的那一次才記），這裡擋的是多餘的寫入與兩顆按鈕搶改同一筆訂單。
 // 記在獨立的 Set 而不是掛在 order 物件上，因為 toOrder() 每次 onSnapshot 都會重建
 // 物件，掛在上面的旗標會在寫入完成前就被洗掉。
 const busyOrderIds = ref(new Set());
@@ -415,9 +416,18 @@ const acceptOrder = (order) => runOrderAction(order.id, async () => {
   } catch (e) { console.warn('[Mailbox] 🔥 接受訂單失敗：', e.code, e.message); alert("操作失敗"); }
 });
 
+// 婉拒目前只出現在賣家側（pending / negotiating 的卡片），但 lastActionBy 還是
+// 照 activeTab 推導：規則層的 cancelActorOk() 要求轉成 rejected 時它必須等於操作
+// 者本人，寫死成 'seller' 的話，哪天買家側也長出這顆按鈕就會直接被規則擋下。
+// onOrderCancelled 也靠這個值判斷「賣家婉拒」不記次——不標的話它會沿用協商階段
+// 留下的舊值，把一次取消記到無辜的人頭上。
 const rejectOrder = (order) => runOrderAction(order.id, async () => {
   if (confirm("確定取消預約？")) {
-    await updateDoc(doc(db, "orders", order.id), { status: 'rejected', updatedAt: serverTimestamp() });
+    await updateDoc(doc(db, "orders", order.id), {
+      status: 'rejected',
+      lastActionBy: activeTab.value === 'buy' ? 'buyer' : 'seller',
+      updatedAt: serverTimestamp()
+    });
   }
 });
 
@@ -440,8 +450,13 @@ const canCancel = (order) => {
 // 取消次數限制：30 天最多 3 次，記在 users/{uid}.cancelCount。
 // 額度是「買 + 賣」共用同一份：不論這次是以買家還是賣家身分取消，都扣同一個
 // 計數器（因為計數器掛在使用者身上，不分角色），跨期自動歸零。
-// 這裡只做前端判斷與寫入，沒有安全規則強制，使用者理論上能繞過
-//（見 docs/wiki/新交易流程規格.md 的風險 1）。
+//
+// 記次已經不在這裡做了：滿 3 次現在連「發起新交易」都會被 firestore.rules 的
+// notTradeBanned() 擋下，前端寫的數字就不能信——自己把 cancelCount 改回 0 就
+// 繞過閘門了。改由 Cloud Function onOrderCancelled 以 Admin SDK 寫入，users
+// 規則把 cancelCount / cancelPeriodStart 列為本人不可竄改。
+// 底下這段只剩「還剩幾次」的讀取與提示：取消本身仍然只有前端在擋，但繞過去的
+// 代價是照樣被記次、照樣發不了新交易。
 const CANCEL_LIMIT = 3;
 const CANCEL_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -463,7 +478,7 @@ const cancelOrder = (order) => runOrderAction(order.id, async () => {
   }
 
   if (remaining <= 0) {
-    alert(`取消次數已達上限（30 天內 ${CANCEL_LIMIT} 次，買家與賣家身分共用額度），暫時無法取消，請直接與對方協調或聯繫平台管理員。`);
+    alert(`取消次數已達上限（30 天內 ${CANCEL_LIMIT} 次，買家與賣家身分共用額度），暫時無法取消，也無法發起新交易，請直接與對方協調或聯繫平台管理員。`);
     return;
   }
 
@@ -473,24 +488,19 @@ const cancelOrder = (order) => runOrderAction(order.id, async () => {
     : '取消後這筆交易會關閉，商品仍保留在您的賣場。';
   if (!confirm(
     `確定要取消「${order.productName}」的交易嗎？\n\n${afterNote}\n\n` +
-    `取消後剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次（30 天內，買賣共用）。`
+    `取消後剩餘額度：${remaining - 1} / ${CANCEL_LIMIT} 次（30 天內，買賣共用）。` +
+    `額度用完的話，30 天內連新的交易也發起不了。`
   )) return;
 
   try {
+    // 只寫訂單。cancelCount 由 onOrderCancelled 接手（跨期歸零也在那邊），所以
+    // 按下之後計數會晚一兩秒才落地，緊接著再取消一次讀到的剩餘額度可能還是舊的。
+    // 拿這點延遲換「計數竄改不了」很划算。
     await updateDoc(doc(db, "orders", order.id), {
       status: 'rejected',
       lastActionBy: asBuyer ? 'buyer' : 'seller',
       updatedAt: serverTimestamp()
     });
-    // 跨期要歸零重算，不能用 increment（沒有基準值可加）；未跨期才用原子遞增
-    if (periodExpired) {
-      await updateDoc(doc(db, 'users', user.uid), {
-        cancelCount: 1,
-        cancelPeriodStart: serverTimestamp()
-      });
-    } else {
-      await updateDoc(doc(db, 'users', user.uid), { cancelCount: increment(1) });
-    }
   } catch (e) {
     console.error('[Mailbox] 取消請求失敗：', e.code, e.message);
     alert("取消失敗，請重試。");
@@ -564,6 +574,7 @@ const isExpired = (order) => {
 // 逾期關閉不再扣按下的人——放鳥的是對方，卻要準時到場的人吐一次額度並不合理。
 // 改由 Cloud Function onOrderExpired 監聽 status 轉成 expired，把紀錄記在該回應
 // 卻沒回應的那一方身上（前端寫不了別人的 users 文件，只能放伺服器端）。
+// 兩邊都沒按安全交易時誰都不記：那種情況連一點紀錄差異都沒有，判不出是誰沒到。
 // 這裡因此只寫訂單，不碰任何額度。
 const expireOrder = (order) => runOrderAction(order.id, async () => {
   let reason;
@@ -571,9 +582,9 @@ const expireOrder = (order) => runOrderAction(order.id, async () => {
   if (order.status === 'accepted') {
     const iShowedUp = activeTab.value === 'buy' ? !!order.buyerReady : !!order.sellerReady;
     reason = '雙方都沒有開始安全交易';
-    blame = '沒出現的一方會被記一次爽約。' + (iShowedUp
-      ? '你已按過安全交易，這次不會記在你身上。'
-      : '雙方都沒有按下安全交易，兩邊都會各記一次。');
+    blame = iShowedUp
+      ? '你已按過安全交易，沒按的那一方會被記一次爽約。'
+      : '雙方都沒有按下安全交易，判不出是誰沒到，這次誰都不會被記次。';
   } else {
     reason = order.status === 'pending' ? '賣家一直沒有回應' : '協商到一半沒有人回應';
     blame = '沒回應的一方會被記一次未回應紀錄（與爽約分開計算）。' +

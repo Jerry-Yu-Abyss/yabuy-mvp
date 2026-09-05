@@ -33,7 +33,8 @@ service cloud.firestore {
       // 擋不住「先建一份乾淨的」這條路。
       allow create: if request.auth != null && request.auth.uid == uid
         && !request.resource.data.keys().hasAny(['expireCount', 'expirePeriodStart',
-                                                 'noReplyCount', 'noReplyPeriodStart']);
+                                                 'noReplyCount', 'noReplyPeriodStart',
+                                                 'cancelCount', 'cancelPeriodStart']);
 
       // 更新規則：兩種情況之一才允許
       //
@@ -50,7 +51,8 @@ service cloud.firestore {
           && !request.resource.data.diff(resource.data).affectedKeys()
                 .hasAny(['isAdmin', 'isFounder', 'ratingSum', 'ratingCount',
                          'expireCount', 'expirePeriodStart',
-                         'noReplyCount', 'noReplyPeriodStart'])
+                         'noReplyCount', 'noReplyPeriodStart',
+                         'cancelCount', 'cancelPeriodStart'])
         )
         // (2) 管理員可改他人狀態（拉黑/解除），但不可停權創辦人、也不可改 isAdmin/isFounder
         || (
@@ -76,26 +78,30 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
-      // 逾期爽約閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動
-      // 恢復（不需要人工解鎖）。次數由 Cloud Function onOrderExpired 以
-      // Admin SDK 寫入，users.update 已把 expireCount / expirePeriodStart
-      // 列入本人不可竄改的清單——否則只要把數字改回 0 就能繞過這道閘門。
+      // 發起交易的閘門：30 天內被記滿 3 次的人不能再發起新交易，週期過完自動
+      // 恢復（不需要人工解鎖）。三組次數都由 Cloud Function 以 Admin SDK 寫入
+      // （onOrderExpired 寫前兩組、onOrderCancelled 寫 cancelCount），users.update
+      // 已把六個欄位列入本人不可竄改的清單——否則只要把數字改回 0 就能繞過閘門。
       //
       // 沒有 users 文件的舊帳號（backfillUserDocs 的存在證明確實有）不該被
-      // 誤擋，所以 expirePeriodStart 取不到時用 2000-01-01 當預設：那個週期
-      // 早就過完，條件必定為 false。
-      function notExpireBanned() {
+      // 誤擋，所以週期起點取不到時用 2000-01-01 當預設：那個週期早就過完，
+      // 條件必定為 false。
+      function notTradeBanned() {
         let path = /databases/$(database)/documents/users/$(request.auth.uid);
         let u = exists(path) ? get(path).data : {};
         let expStart = u.get('expirePeriodStart', timestamp.date(2000, 1, 1));
         let repStart = u.get('noReplyPeriodStart', timestamp.date(2000, 1, 1));
-        // 兩種爽約分開計數、各自 3 次，但踩到任一條的後果一樣：暫時不能發起新交易。
-        //   expireCount  —— 約好了卻沒出現（accepted 逾期）
+        let canStart = u.get('cancelPeriodStart', timestamp.date(2000, 1, 1));
+        // 三種紀錄分開計數、各自 3 次，但踩到任一條的後果一樣：暫時不能發起新交易。
+        //   expireCount  —— 約好了卻沒出現（accepted 逾期，且只有一方沒按安全交易）
         //   noReplyCount —— 收到請求後從頭到尾沒回應（pending / negotiating 逾期）
+        //   cancelCount  —— 自己主動把談好或談到一半的交易取消掉
         return !(u.get('expireCount', 0) >= 3
                  && request.time < expStart + duration.value(30, 'd'))
             && !(u.get('noReplyCount', 0) >= 3
-                 && request.time < repStart + duration.value(30, 'd'));
+                 && request.time < repStart + duration.value(30, 'd'))
+            && !(u.get('cancelCount', 0) >= 3
+                 && request.time < canStart + duration.value(30, 'd'));
       }
 
       // 這筆訂單的當事人（買家或賣家）
@@ -182,6 +188,21 @@ service cloud.firestore {
         // completed / rejected / failed 是終止態：只剩 next == prev 會過
       }
 
+      // 轉成 rejected 時，lastActionBy 必須誠實標成操作者本人。
+      // onOrderCancelled 靠它決定要把取消記給誰，以及這是不是「賣家婉拒一筆還
+      // 沒談成的請求」（那種不記次）。沒有這條的話，取消的人把 lastActionBy 寫
+      // 成對方就能讓自己的額度不動、還把一次取消記到對方頭上；不寫的話則會沿用
+      // 協商階段留下的舊值，同樣記錯人。
+      function cancelActorOk() {
+        let prev = resource.data.get('status', '');
+        let next = request.resource.data.get('status', prev);
+        // 已經是 rejected 的訂單不再檢查：那是終止態，trigger 也早就跳過了，
+        // 沒必要為一筆不會被記次的更新擋下當事人。
+        return next != 'rejected' || prev == 'rejected'
+            || request.resource.data.get('lastActionBy', '') ==
+               (request.auth.uid == resource.data.buyerId ? 'buyer' : 'seller');
+      }
+
       // 成交價：只有買家能填（Deal.vue 的 price 步驟），只有賣家能退回成 null
       // （sellerConfirmPrice(false)），而且都必須發生在 accepted 階段。
       // 上限與 Deal.vue 的 MAX_PRICE 一致——那邊只是前端擋，繞過就能寫進天文
@@ -215,12 +236,13 @@ service cloud.firestore {
         && request.resource.data.productId is string
         && request.resource.data.productId != ''
         && sellerOwnsProduct(request.resource.data.productId)
-        && notExpireBanned();
+        && notTradeBanned();
 
       allow update: if request.auth != null && (
         isAdmin()
         || (isParty() && immutablePartiesKept() && negotiationStepOk()
-            && statusFlowOk() && finalPriceOk() && delayUsedOk())
+            && statusFlowOk() && finalPriceOk() && delayUsedOk()
+            && cancelActorOk())
       );
 
       // 目前沒有任何地方會刪除訂單，不開放

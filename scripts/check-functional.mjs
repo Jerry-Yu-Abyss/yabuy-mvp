@@ -308,7 +308,10 @@ const CASES = [
     id: 'C-14',
     area: 'C. 交易邏輯',
     title: '取消配額 30 天內 3 次',
-    expect: '每次取消 cancelCount+1；達 3 次後顯示上限提示且無法再取消；連點不會一次扣兩次',
+    expect:
+      '每次取消由 onOrderCancelled 記一次 cancelCount（賣家婉拒未談成的請求不算）；'  +
+      '達 3 次後顯示上限提示、無法再取消，且發起新交易也會被 notTradeBanned 擋下；' +
+      '使用者不可自行竄改 cancelCount / cancelPeriodStart',
     runner: RUNNER.DUO,
   },
   {
@@ -325,7 +328,8 @@ const CASES = [
     expect:
       '約定時間過 30 分鐘且雙方未都按安全交易 → 徽章變「⏰ 已逾期」、安全交易按鈕消失、' +
       '出現「逾期關閉」且取消 ✕ 不再顯示；按下後 status=expired，按的人不扣任何額度，' +
-      '爽約記在「沒按安全交易」的一方（onOrderExpired 寫 expireCount，兩邊都沒按時各記一次）；' +
+      '爽約記在「只有一方沒按安全交易」時的那一方（onOrderExpired 寫 expireCount）；' +
+      '兩邊都沒按時判不出是誰沒到，誰都不記；' +
       '滿 3 次的人發起新交易會被擋；雙方都已按過安全交易的訂單不會被判逾期',
     runner: RUNNER.DUO,
   },
@@ -581,8 +585,9 @@ function checkBusinessConstants() {
     ['爽約上限 3 次（規則層）', 'firestore.rules', /expireCount', 0\) >= 3/],
     ['爽約上限 3 次（前端提示）', 'src/components/TradeModal.vue', /EXPIRE_LIMIT = 3/],
     ['爽約週期 30 天（規則層）', 'firestore.rules', /duration\.value\(30, 'd'\)/],
-    ['爽約週期 30 天（Function）', 'functions/src/index.ts', /EXPIRE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],
+    ['記次週期 30 天（Function）', 'functions/src/index.ts', /OFFENCE_PERIOD_MS = 30 \* 24 \* 60 \* 60 \* 1000/],
     ['未回應記次下限 12 小時', 'functions/src/index.ts', /NO_REPLY_MIN_AGE_MS = 12 \* 60 \* 60 \* 1000/],
+    ['取消上限 3 次（規則層）', 'firestore.rules', /cancelCount', 0\) >= 3/],
     ['推遲上限 24 小時', 'src/components/CannedChat.vue', /MAX_DELAY_MS = 24 \* 60 \* 60 \* 1000/],
   ];
   const bad = [];

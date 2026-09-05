@@ -648,9 +648,9 @@ const eq = (label, actual, expected) =>
   eq('推遲同意後約定時間已更新', dm.data.time, '2026-08-20 16:30');
 
   /* ─────────────────────────────────────────────────────────────
-     8. 逾期爽約記次與發起交易閘門（規則層）
+     8. 記次與發起交易閘門（規則層）
      ───────────────────────────────────────────────────────────── */
-  section('8. 逾期爽約記次與發起交易閘門（規則層）');
+  section('8. 記次與發起交易閘門（規則層）');
 
   // 記次本身是 Cloud Function onOrderExpired 用 Admin SDK 寫的，emulator 這層
   // 跑不到 functions，所以這節驗的是「記次寫進去之後，規則擋不擋得住」——
@@ -686,6 +686,18 @@ const eq = (label, actual, expected) =>
   );
 
   expectDenied(
+    '使用者不可自行竄改 cancelCount',
+    await updateDoc(`users/${buyer.uid}`, { cancelCount: 0 }, buyer.token),
+    '取消計數自從變成發起交易的閘門之一，就不能再讓前端自己寫——能改回 0 就繞過閘門'
+  );
+
+  expectDenied(
+    '使用者不可自行竄改 cancelPeriodStart',
+    await updateDoc(`users/${buyer.uid}`, { cancelPeriodStart: new Date() }, buyer.token),
+    '同 expirePeriodStart：把週期起點往後撥等同於把次數歸零'
+  );
+
+  expectDenied(
     '沒有 users 文件的人不可自建一份乾淨的紀錄',
     await setDoc(
       `users/${third.uid}`,
@@ -704,7 +716,7 @@ const eq = (label, actual, expected) =>
   expectAllowed(
     '爽約 2 次（未達上限）仍可發起交易',
     await setDoc('orders/order-strike-ok', orderBase, buyer.token),
-    'notExpireBanned 的門檻是 3 次，2 次不該被擋'
+    'notTradeBanned 的門檻是 3 次，2 次不該被擋'
   );
 
   // 達上限：建單被規則擋下
@@ -716,7 +728,7 @@ const eq = (label, actual, expected) =>
   expectDenied(
     '爽約滿 3 次後不可發起新交易',
     await setDoc('orders/order-strike-ban', orderBase, buyer.token),
-    'orders.create 的 notExpireBanned()。只擋前端的話，繞過 TradeModal 直接打 REST 就能繼續建單'
+    'orders.create 的 notTradeBanned()。只擋前端的話，繞過 TradeModal 直接打 REST 就能繼續建單'
   );
 
   // 未回應是另一組額度：爽約歸零之後，光靠未回應也要能擋住
@@ -728,7 +740,23 @@ const eq = (label, actual, expected) =>
   expectDenied(
     '未回應滿 3 次後同樣不可發起新交易',
     await setDoc('orders/order-noreply-ban', orderBase, buyer.token),
-    'notExpireBanned 要同時看兩組計數，只看 expireCount 的話未回應那條形同虛設'
+    'notTradeBanned 要同時看三組計數，只看 expireCount 的話未回應那條形同虛設'
+  );
+
+  // 主動取消是第三組額度：前兩組歸零之後，光靠取消也要能擋住
+  await setDoc(
+    `users/${buyer.uid}`,
+    {
+      expireCount: 0, expirePeriodStart: new Date(),
+      noReplyCount: 0, noReplyPeriodStart: new Date(),
+      cancelCount: 3, cancelPeriodStart: new Date(),
+    },
+    OWNER
+  );
+  expectDenied(
+    '主動取消滿 3 次後不可發起新交易',
+    await setDoc('orders/order-cancel-ban', orderBase, buyer.token),
+    'notTradeBanned 的第三條。取消額度原本只擋「還能不能再取消」，現在同時擋發起新交易'
   );
 
   expectAllowed(
@@ -753,20 +781,44 @@ const eq = (label, actual, expected) =>
   expectAllowed(
     '30 天週期過完後自動恢復，不需人工解鎖',
     await setDoc('orders/order-strike-reset', orderBase, buyer.token),
-    'notExpireBanned 用 request.time 與 expirePeriodStart + duration.value(30, d) 比較'
+    'notTradeBanned 用 request.time 與 expirePeriodStart + duration.value(30, d) 比較'
   );
 
   // 沒有 users 文件的舊帳號不該被誤擋（backfillUserDocs 的存在證明確實有這種人）
   expectAllowed(
     '沒有 users 文件的帳號不會被閘門誤擋',
     await setDoc('orders/order-strike-nodoc', { ...orderBase, buyerId: third.uid }, third.token),
-    'notExpireBanned 在 users 文件不存在時用 2000-01-01 當預設起點，條件必定為 false'
+    'notTradeBanned 在 users 文件不存在時用 2000-01-01 當預設起點，條件必定為 false'
+  );
+
+  // 轉成 rejected 時 lastActionBy 必須誠實標成操作者本人：onOrderCancelled 靠它
+  // 決定要把取消記給誰，也靠它分辨「賣家婉拒一筆還沒談成的請求」不記次。
+  // order-strike-split 是上面「兩組計數各自獨立」那項由買家建的，還停在 pending。
+  expectDenied(
+    '取消時不可把 lastActionBy 寫成對方',
+    await updateDoc(
+      'orders/order-strike-split',
+      { status: 'rejected', lastActionBy: 'seller' },
+      buyer.token
+    ),
+    'orders.update 的 cancelActorOk()。記次的依據能造假的話，取消額度等於沒有——' +
+    '取消的人把自己標成對方，額度就記到無辜的人頭上'
+  );
+
+  expectAllowed(
+    '取消時標上自己就放行',
+    await updateDoc(
+      'orders/order-strike-split',
+      { status: 'rejected', lastActionBy: 'buyer' },
+      buyer.token
+    ),
+    'cancelActorOk 只要求誠實標示，不擋取消本身'
   );
 
   /* ─────────────────────────────────────────────────────────────
-     9. 逾期記次 Cloud Function（onOrderExpired）
+     9. 記次 Cloud Function（onOrderExpired／onOrderCancelled）
      ───────────────────────────────────────────────────────────── */
-  section('9. 逾期記次 Cloud Function（onOrderExpired）');
+  section('9. 記次 Cloud Function（onOrderExpired／onOrderCancelled）');
 
   // 這節需要 functions emulator（npm run emu:fn）。只跑 npm run emu 的話
   // trigger 根本不會被觸發，這裡會註記略過而不是假裝驗過。
@@ -817,9 +869,11 @@ const eq = (label, actual, expected) =>
     await updateDoc(`orders/${FID}`, { buyerReady: true }, fnBuyer.token);
     await updateDoc(`orders/${FID}`, { status: 'expired' }, fnBuyer.token);
 
-    // trigger 是非同步的，輪詢等它落地
+    // trigger 是非同步的，輪詢等它落地。這一筆是本節的第一次觸發，會踩到
+    // functions emulator 的冷啟動（實測整整超過 15 秒），所以等得比後面幾筆久——
+    // 等不夠久的話整節會被當成「trigger 沒跑」而跳過，看起來像沒驗但其實是誤判。
     let sellerCount = null;
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 80; i++) {
       sellerCount = await readCount(fnSeller.uid);
       if (sellerCount === 1) break;
       await new Promise((r) => setTimeout(r, 500));
@@ -847,20 +901,18 @@ const eq = (label, actual, expected) =>
     eq('放鳥的賣家被記一次爽約', sellerCount, 1);
     eq('準時到場的買家不被記次', await readCount(fnBuyer.uid), null);
 
-    // 雙方都沒出現 → 兩邊都算爽約
+    // 雙方都沒出現 → 判不出是誰放的鳥，誰都不記
     const FID2 = 'order-fn-expire-both';
     await setDoc(`orders/${FID2}`, fnOrderBase, fnBuyer.token);
     await updateDoc(`orders/${FID2}`, { status: 'accepted' }, fnSeller.token);
     await updateDoc(`orders/${FID2}`, { status: 'expired' }, fnSeller.token);
 
-    let bothBuyer = null;
-    for (let i = 0; i < 30; i++) {
-      bothBuyer = await readCount(fnBuyer.uid);
-      if (bothBuyer === 1) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    eq('雙方都沒出現時買家也被記一次', bothBuyer, 1);
-    eq('雙方都沒出現時賣家累加到 2', await readCount(fnSeller.uid), 2);
+    // 這裡沒有「等到某個數字」可以輪詢——要驗的正是「什麼都沒發生」，只能給
+    // trigger 一段足夠落地的時間再讀。上一個情境已經證明 trigger 是活的。
+    await new Promise((r) => setTimeout(r, 4000));
+
+    eq('雙方都沒出現時買家不被記次', await readCount(fnBuyer.uid), null);
+    eq('雙方都沒出現時賣家的計數也不動', await readCount(fnSeller.uid), 1);
 
     /* ── 未回應（pending / negotiating 逾期）記在另一組計數 ── */
     const readNoReply = async (uid) => {
@@ -886,7 +938,7 @@ const eq = (label, actual, expected) =>
 
     eq('pending 逾期 → 記賣家未回應', sellerNoReply, 1);
     eq('pending 逾期 → 不記發起的買家', await readNoReply(fnBuyer.uid), null);
-    eq('未回應不會汙染爽約計數', await readCount(fnSeller.uid), 2);
+    eq('未回應不會汙染爽約計數', await readCount(fnSeller.uid), 1);
 
     // negotiating：最後動作者是賣家 → 沒回的是買家
     const RID2 = 'order-noreply-nego';
@@ -914,6 +966,64 @@ const eq = (label, actual, expected) =>
     await new Promise((r) => setTimeout(r, 3000));
 
     eq('訂單成立不滿 12 小時就逾期 → 不記給任何人', await readNoReply(fnSeller.uid), 1);
+
+    /* ── 主動取消記次（onOrderCancelled） ── */
+    const readCancel = async (uid) => {
+      const r = await getDoc(`users/${uid}`, OWNER2);
+      return r.data?.cancelCount ?? null;
+    };
+
+    // 買家取消一筆已經談成的交易 → 記買家
+    const CID = 'order-cancel-buyer';
+    await setDoc(`orders/${CID}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(`orders/${CID}`, { status: 'accepted' }, fnSeller.token);
+    await updateDoc(
+      `orders/${CID}`,
+      { status: 'rejected', lastActionBy: 'buyer' },
+      fnBuyer.token
+    );
+
+    let buyerCancel = null;
+    for (let i = 0; i < 30; i++) {
+      buyerCancel = await readCancel(fnBuyer.uid);
+      if (buyerCancel === 1) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+
+    eq('買家取消談成的交易 → 記買家一次', buyerCancel, 1);
+    eq('被取消的另一方不被記次', await readCancel(fnSeller.uid), null);
+
+    // 賣家婉拒一筆還沒談成的請求 → 那不是取消，誰都不記
+    const CID2 = 'order-cancel-decline';
+    await setDoc(`orders/${CID2}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(
+      `orders/${CID2}`,
+      { status: 'rejected', lastActionBy: 'seller' },
+      fnSeller.token
+    );
+    await new Promise((r) => setTimeout(r, 4000));
+
+    eq('賣家婉拒 pending 請求 → 不記次', await readCancel(fnSeller.uid), null);
+    eq('婉拒也不會反過來記到買家頭上', await readCancel(fnBuyer.uid), 1);
+
+    // 賣家取消一筆已經談成的交易 → 這才算取消，記賣家
+    const CID3 = 'order-cancel-seller';
+    await setDoc(`orders/${CID3}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(`orders/${CID3}`, { status: 'accepted' }, fnSeller.token);
+    await updateDoc(
+      `orders/${CID3}`,
+      { status: 'rejected', lastActionBy: 'seller' },
+      fnSeller.token
+    );
+
+    let sellerCancel = null;
+    for (let i = 0; i < 30; i++) {
+      sellerCancel = await readCancel(fnSeller.uid);
+      if (sellerCancel === 1) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    eq('賣家取消談成的交易 → 記賣家一次', sellerCancel, 1);
   })();
 
   /* ─────────────────────────────────────────────────────────────

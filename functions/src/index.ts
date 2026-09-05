@@ -364,11 +364,41 @@ export const onReviewCreated = onDocumentCreated(
 //
 // 分成兩組計數，因為兩件事的嚴重性不同，各給 3 次容忍：
 //   expireCount  約好了卻沒出現。判準是沒按下安全交易（buyerReady /
-//                sellerReady）；逾期的定義本身就是「雙方沒有都按下」，
-//                所以至少會抓到一個人，兩個都沒按時兩個都算。
+//                sellerReady）。兩邊都沒按時誰都不記——見下面 onOrderExpired
+//                裡的說明。
 //   noReplyCount 收到請求後從頭到尾沒回應。pending 是賣家沒回；
 //                negotiating 是「不是最後動作者」的那一方沒回。
-const EXPIRE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+// 第三組 cancelCount（主動取消）在 onOrderCancelled，週期與門檻共用同一套。
+const OFFENCE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+// 三組計數都是同一套「30 天內累加、跨期歸零重算」，共用這支。
+// 用交易而不是單純 increment：跨週期要歸零，得先讀到現值才知道該歸零還是
+// 累加，讀寫之間必須是原子的。
+const bumpOffence = (
+  uid: string,
+  field: "expireCount" | "noReplyCount" | "cancelCount",
+  periodField:
+    | "expirePeriodStart"
+    | "noReplyPeriodStart"
+    | "cancelPeriodStart",
+) => {
+  const db = admin.firestore();
+  return db.runTransaction(async (tx) => {
+    const ref = db.collection("users").doc(uid);
+    const snap = await tx.get(ref);
+    const data = snap.data() || {};
+    const startMs = data[periodField]?.toMillis?.() ?? null;
+    const periodOver =
+      startMs === null || Date.now() - startMs > OFFENCE_PERIOD_MS;
+
+    tx.set(ref, periodOver ? {
+      [field]: 1,
+      [periodField]: FieldValue.serverTimestamp(),
+    } : {
+      [field]: FieldValue.increment(1),
+    }, {merge: true});
+  });
+};
 
 // 未回應要記次，訂單至少得存在這麼久——買家可以把面交時間填在半小時後，
 // 賣家根本來不及看到就逾期了。沒有這道下限，惡意買家連送三筆「馬上就要」
@@ -396,8 +426,20 @@ export const onOrderExpired = onDocumentUpdated(
     if (before.status === "accepted") {
       field = "expireCount";
       periodField = "expirePeriodStart";
-      if (after.buyerReady !== true && buyerId) offenders.push(buyerId);
-      if (after.sellerReady !== true && sellerId) offenders.push(sellerId);
+      const buyerNoShow = after.buyerReady !== true;
+      const sellerNoShow = after.sellerReady !== true;
+
+      // 兩邊都沒按下安全交易時誰都不記。按鈕在約定時間前 10 分鐘就開放、人在
+      // 家裡也按得下去，所以「有按」本來就不是到場的鐵證；但「兩邊都沒按」連
+      // 一點紀錄差異都沒有，唯一能確定的是這場面交沒發生，確定不了是誰放的鳥。
+      // 兩邊各記一次等於把責任平均攤給準時到場卻沒按按鈕的那個人。
+      if (buyerNoShow && sellerNoShow) {
+        console.log("雙方都沒按安全交易，不記爽約", event.params.orderId);
+        return;
+      }
+
+      if (buyerNoShow && buyerId) offenders.push(buyerId);
+      if (sellerNoShow && sellerId) offenders.push(sellerId);
     } else if (before.status === "pending" || before.status === "negotiating") {
       field = "noReplyCount";
       periodField = "noReplyPeriodStart";
@@ -422,27 +464,45 @@ export const onOrderExpired = onDocumentUpdated(
 
     if (offenders.length === 0) return;
 
-    const db = admin.firestore();
     await Promise.all(offenders.map((uid) =>
-      // 交易而非單純 increment：跨週期要歸零重算，得先讀到現值才知道
-      // 該歸零還是累加，讀寫之間必須是原子的
-      db.runTransaction(async (tx) => {
-        const ref = db.collection("users").doc(uid);
-        const snap = await tx.get(ref);
-        const data = snap.data() || {};
-        const startMs = data[periodField]?.toMillis?.() ?? null;
-        const periodOver =
-          startMs === null || Date.now() - startMs > EXPIRE_PERIOD_MS;
-
-        tx.set(ref, periodOver ? {
-          [field]: 1,
-          [periodField]: FieldValue.serverTimestamp(),
-        } : {
-          [field]: FieldValue.increment(1),
-        }, {merge: true});
-      })
+      bumpOffence(uid, field, periodField)
     ));
 
     console.log("逾期記次", event.params.orderId, field, offenders);
+  }
+);
+
+// ── 取消計次 ──────────────────────────────────────────────────────
+// 主動取消交易的人記一次 cancelCount。
+//
+// 這個計數原本是 Mailbox.vue 自己寫進 users/{uid} 的。那時它只用來擋「還能不
+// 能再取消」，前端說了算還過得去；現在它同時擋「能不能發起新交易」，前端寫的
+// 數字就不能信了——任何人改自己的 users 文件把它歸零就繞過閘門。所以搬來這裡
+// 用 Admin SDK 寫，users 規則把 cancelCount / cancelPeriodStart 一併列入本人
+// 不可竄改的清單。
+//
+// 賣家婉拒不算：pending / negotiating 時賣家按「婉拒」與買家按「取消」都落到
+// rejected，但婉拒是賣家對一筆還沒談成的請求說不，本來就沒扣過額度。
+// 誰動的手看 lastActionBy，firestore.rules 的 cancelActorOk() 保證轉成
+// rejected 時它一定等於操作者本人，否則寫不進去。
+export const onOrderCancelled = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+    if (before.status === "rejected" || after.status !== "rejected") return;
+
+    const actor = after.lastActionBy;
+    if (actor !== "buyer" && actor !== "seller") return;
+
+    // 還沒談成的請求被賣家婉拒——不是取消，不記次
+    if (before.status !== "accepted" && actor === "seller") return;
+
+    const uid = actor === "buyer" ? after.buyerId : after.sellerId;
+    if (typeof uid !== "string" || !uid) return;
+
+    await bumpOffence(uid, "cancelCount", "cancelPeriodStart");
+    console.log("取消記次", event.params.orderId, actor, uid);
   }
 );
