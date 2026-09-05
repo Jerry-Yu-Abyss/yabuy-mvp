@@ -180,6 +180,17 @@
             v-model.trim="emailInput" type="email" autocomplete="email"
             class="em-input" placeholder="電子郵件" required
           />
+          <button
+            v-if="emailSuggestion" type="button" class="em-suggest"
+            @click="applyEmailSuggestion"
+          >
+            您是不是要輸入這個信箱？<b>{{ emailSuggestion }}</b>點這裡直接更正
+          </button>
+          <input
+            v-if="authMode === 'register'"
+            v-model.trim="confirmEmailInput" type="email" autocomplete="email"
+            class="em-input" placeholder="確認電子郵件" required
+          />
           <input
             v-model="passwordInput" type="password"
             :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
@@ -212,7 +223,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import {
   signInWithPopup,
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
@@ -223,6 +234,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firest
 import { httpsCallable } from 'firebase/functions';
 import { auth, googleProvider, db, functions } from '@/firebase';
 import { resolveVerifyStatus, isVerified, sendVerificationThrottled } from './verify.js';
+import { suggestEmailDomain, emailsMatch } from './emailCheck.js';
 
 const emit = defineEmits(['login-success']);
 
@@ -270,10 +282,24 @@ const handleGoogleLogin = async () => {
 const showEmailModal = ref(false);
 const authMode = ref('login');            // 'login' | 'register'
 const emailInput = ref('');
+const confirmEmailInput = ref('');
 const passwordInput = ref('');
 const confirmPasswordInput = ref('');
 const emailSubmitting = ref(false);
 const emailError = ref('');
+
+// 疑似打錯網域的提示。登入模式也顯示 —— 登入失敗只會說「帳號或密碼不正確」，
+// 使用者不會意識到是信箱打錯了。
+const emailSuggestion = computed(() => suggestEmailDomain(emailInput.value));
+
+// 一鍵更正。兩欄原本一致（使用者把同一個錯字打了兩次）時要一起改，
+// 否則按完更正反而變成兩欄不符，等於幫倒忙。
+const applyEmailSuggestion = () => {
+  const fixed = emailSuggestion.value;
+  if (!fixed) return;
+  if (emailsMatch(confirmEmailInput.value, emailInput.value)) confirmEmailInput.value = fixed;
+  emailInput.value = fixed;
+};
 
 const openEmailModal = () => {
   emailError.value = '';
@@ -283,12 +309,14 @@ const openEmailModal = () => {
 const closeEmailModal = () => {
   showEmailModal.value = false;
   emailInput.value = '';
+  confirmEmailInput.value = '';
   passwordInput.value = '';
   confirmPasswordInput.value = '';
   emailError.value = '';
 };
 const toggleAuthMode = () => {
   authMode.value = authMode.value === 'login' ? 'register' : 'login';
+  confirmEmailInput.value = '';
   passwordInput.value = '';
   confirmPasswordInput.value = '';
   emailError.value = '';
@@ -345,6 +373,9 @@ const upsertUserDoc = async (fbUser) => {
     const keepCurrent = isVerified(current) && !isVerified(verify);
     await updateDoc(userRef, {
       lastLogin: serverTimestamp(),
+      // email 要跟著同步：使用者改過信箱後這裡若停在舊值，
+      // Admin.vue 用 email 找人設定管理員就會找不到。
+      email: fbUser.email,
       photoURL: fbUser.photoURL || userSnap.data().photoURL || '',
       verify: keepCurrent ? current : verify
     });
@@ -352,6 +383,12 @@ const upsertUserDoc = async (fbUser) => {
 };
 
 const handleEmailAuth = async () => {
+  // 信箱先擋：Firebase 只驗格式不驗存在，打錯網域一樣註冊成功，
+  // 驗證信寄向不存在的位址後帳號就此卡死（無法改信箱也無法自刪）。
+  if (authMode.value === 'register' && !emailsMatch(emailInput.value, confirmEmailInput.value)) {
+    emailError.value = '兩次輸入的電子郵件不一致，請重新確認。';
+    return;
+  }
   if (authMode.value === 'register' && passwordInput.value !== confirmPasswordInput.value) {
     emailError.value = '兩次輸入的密碼不一致，請重新確認。';
     return;
@@ -653,6 +690,13 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 .em-submit:disabled { opacity: .6; cursor: not-allowed; }
 .em-links { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
 .em-link { background: none; border: none; padding: 4px 0; font-size: 12px; font-weight: 700; color: #7f8c8d; cursor: pointer; text-decoration: underline; }
+.em-suggest {
+  margin: -4px 0 0; padding: 8px 10px; width: 100%;
+  border: 1px dashed var(--green); border-radius: 10px;
+  background: rgba(122, 158, 126, 0.10);
+  font-size: 13px; line-height: 1.5; color: #3f5c43; text-align: left; cursor: pointer;
+}
+.em-suggest b { display: block; margin: 2px 0; font-weight: 800; word-break: break-all; }
 .em-error { margin: 6px 0 0; font-size: 13px; font-weight: 700; color: #b3423a; text-align: center; }
 
 /* 進場動畫 */

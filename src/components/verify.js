@@ -9,7 +9,10 @@
 //   'email'    → 已完成信箱驗證（電子郵件密碼登入）
 //   'not_yet'  → 尚未完成信箱驗證（不論是否曾綁定 Google）
 
-import { sendEmailVerification } from 'firebase/auth';
+import {
+  sendEmailVerification, verifyBeforeUpdateEmail,
+  reauthenticateWithCredential, EmailAuthProvider
+} from 'firebase/auth';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
 
@@ -123,6 +126,9 @@ export const sendVerificationThrottled = async (fbUser) => {
     writeLastSentAt(fbUser.uid, now);
     return { sent: true, waitMs: 0 };
   } catch (e) {
+    // 一定要 log：呼叫端有些只 await 不看回傳值，錯誤被吃掉後
+    // 「寄失敗」和「寄成功」在畫面上長得一模一樣，無從除錯。
+    console.error('寄送驗證信失敗:', e?.code || e);
     return { sent: false, waitMs: 0, error: e };   // 寄送失敗不影響提示
   }
 };
@@ -138,4 +144,45 @@ export const blockUnverifiedForTrade = async (
     : { sent: false };
   toastFn?.(verifyBlockMsg(action, sent));
   return false;
+};
+
+// ── 改信箱（打錯信箱的自救路徑）──
+// 為什麼一定要有這條路：Firebase 只驗信箱「格式」不驗「存在」。使用者把網域打錯
+// 照樣註冊成功，驗證信寄向一個收不到的位址，帳號就此卡死 —— 驗不過就不能交易、
+// 不能上架，而 Firebase Auth 又不允許使用者自行刪除帳號。沒有這條路只能重辦一個。
+//
+// 為什麼用 verifyBeforeUpdateEmail 而不是 updateEmail：
+// updateEmail 是「先改掉再說」，使用者若第二次又打錯，帳號就換到另一個同樣收不到
+// 信的位址，死結只會打得更緊。verifyBeforeUpdateEmail 的順序剛好相反 —— 先把確認信
+// 寄到新位址，使用者真的收到並點了連結才套用變更。第二次打錯不會有任何後果，
+// 舊信箱原封不動，可以再試一次。
+//
+// 回傳 { ok, code }：code 交給呼叫端翻成中文訊息，這裡不決定文案。
+export const requestEmailChange = async (fbUser, newEmail, password) => {
+  if (!fbUser) return { ok: false, code: 'no-user' };
+
+  // Google 帳號的信箱由 Google 決定，不走這條路；先擋掉才不會給出誤導的錯誤訊息。
+  const hasPassword = fbUser.providerData?.some((p) => p.providerId === 'password');
+  if (!hasPassword) return { ok: false, code: 'no-password-provider' };
+
+  try {
+    // 必須先重新驗證身分：改信箱屬於敏感操作，登入時間稍久 Firebase 就會直接
+    // 丟 auth/requires-recent-login。先在這裡用密碼換一次新鮮的憑證。
+    await reauthenticateWithCredential(
+      fbUser, EmailAuthProvider.credential(fbUser.email, password)
+    );
+  } catch (e) {
+    console.error('改信箱：重新驗證身分失敗:', e?.code || e);
+    return { ok: false, code: e?.code || 'reauth-failed' };
+  }
+
+  try {
+    // url 讓 Firebase 套用變更後的「繼續」按鈕導回本站；不加 handleCodeInApp，
+    // 因為套用確認碼不需要使用者再輸入任何東西，交給 Firebase 的頁面處理即可。
+    await verifyBeforeUpdateEmail(fbUser, newEmail, { url: window.location.origin });
+    return { ok: true };
+  } catch (e) {
+    console.error('改信箱：寄送確認信失敗:', e?.code || e);
+    return { ok: false, code: e?.code || 'send-failed' };
+  }
 };

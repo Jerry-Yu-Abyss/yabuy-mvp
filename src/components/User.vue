@@ -16,7 +16,39 @@
           <button type="button" @click="handleResendVerification" :disabled="resendingVerify">
             {{ resendingVerify ? '寄送中…' : '重新寄送驗證信' }}
           </button>
+          <button type="button" class="banner-link" @click="toggleEmailChange">
+            {{ showEmailChange ? '取消' : '信箱打錯了？' }}
+          </button>
         </div>
+
+        <!-- 改信箱：信箱打錯的使用者唯一的自救路徑（詳見 verify.js requestEmailChange） -->
+        <form v-if="showVerifyBanner && showEmailChange" class="email-change" @submit.prevent="handleEmailChange">
+          <p class="email-change-hint">
+            目前的信箱是 <b>{{ currentEmail }}</b>。<br />
+            確認信會寄到新信箱，點了信中連結才會真的更改，打錯不會有影響。
+          </p>
+          <input
+            v-model.trim="newEmailInput" type="email" autocomplete="email"
+            class="email-input" placeholder="新的電子郵件" required
+          />
+          <button
+            v-if="newEmailSuggestion" type="button" class="email-suggest"
+            @click="applyNewEmailSuggestion"
+          >
+            您是不是要輸入這個信箱？<b>{{ newEmailSuggestion }}</b>點這裡直接更正
+          </button>
+          <input
+            v-model.trim="confirmNewEmailInput" type="email" autocomplete="email"
+            class="email-input" placeholder="確認新的電子郵件" required
+          />
+          <input
+            v-model="changePasswordInput" type="password" autocomplete="current-password"
+            class="email-input" placeholder="目前的密碼" required
+          />
+          <button type="submit" class="email-submit-btn" :disabled="changingEmail">
+            {{ changingEmail ? '處理中…' : '寄出確認信' }}
+          </button>
+        </form>
 
         <div class="profile-main">
           <div class="avatar-container">
@@ -188,6 +220,23 @@
                 autocomplete="email"
                 class="email-input"
                 placeholder="電子郵件"
+                required
+              />
+              <button
+                v-if="emailSuggestion"
+                type="button"
+                class="email-suggest"
+                @click="applyEmailSuggestion"
+              >
+                您是不是要輸入這個信箱？<b>{{ emailSuggestion }}</b>點這裡直接更正
+              </button>
+              <input
+                v-if="authMode === 'register'"
+                v-model.trim="confirmEmailInput"
+                type="email"
+                autocomplete="email"
+                class="email-input"
+                placeholder="確認電子郵件"
                 required
               />
               <input
@@ -378,8 +427,9 @@ import TradeModal from './TradeModal.vue';
 import { registerModalOpen, registerModalClose } from './modalState.js';
 import {
   resolveVerifyStatus, isVerified, blockUnverifiedForTrade,
-  ensureVerified, sendVerificationThrottled
+  ensureVerified, sendVerificationThrottled, requestEmailChange
 } from './verify.js';
+import { suggestEmailDomain, emailsMatch } from './emailCheck.js';
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(['enter-admin']);
@@ -418,10 +468,24 @@ onUnmounted(() => { if (isEditing.value) registerModalClose(); });
 const showEmailForm = ref(false);
 const authMode = ref('login');           // 'login' | 'register'
 const emailInput = ref('');
+const confirmEmailInput = ref('');
 const passwordInput = ref('');
 const confirmPasswordInput = ref('');
 const emailSubmitting = ref(false);
 const resendingVerify = ref(false);
+
+// 疑似打錯網域的提示。登入模式也顯示 —— 登入失敗只會說「帳號或密碼不正確」，
+// 使用者不會意識到是信箱打錯了。
+const emailSuggestion = computed(() => suggestEmailDomain(emailInput.value));
+
+// 一鍵更正。兩欄原本一致（使用者把同一個錯字打了兩次）時要一起改，
+// 否則按完更正反而變成兩欄不符，等於幫倒忙。
+const applyEmailSuggestion = () => {
+  const fixed = emailSuggestion.value;
+  if (!fixed) return;
+  if (emailsMatch(confirmEmailInput.value, emailInput.value)) confirmEmailInput.value = fixed;
+  emailInput.value = fixed;
+};
 
 // 已登入但信箱尚未驗證時顯示提示（與 Firestore users.verify 判定一致）。
 // props.user 來自 App.vue 的 onAuthStateChanged，其 emailVerified 取自本機快取；
@@ -434,6 +498,78 @@ const showVerifyBanner = computed(() => {
   return !isVerified(resolveVerifyStatus(props.user));
 });
 
+// ── 改信箱表單 ──
+const showEmailChange = ref(false);
+const newEmailInput = ref('');
+const confirmNewEmailInput = ref('');
+const changePasswordInput = ref('');
+const changingEmail = ref(false);
+const currentEmail = computed(() => auth.currentUser?.email || '');
+
+// 新信箱一樣要過打錯網域的提示 —— 會走到這裡的人就是上次打錯的人。
+const newEmailSuggestion = computed(() => suggestEmailDomain(newEmailInput.value));
+const applyNewEmailSuggestion = () => {
+  const fixed = newEmailSuggestion.value;
+  if (!fixed) return;
+  if (emailsMatch(confirmNewEmailInput.value, newEmailInput.value)) confirmNewEmailInput.value = fixed;
+  newEmailInput.value = fixed;
+};
+
+const toggleEmailChange = () => {
+  showEmailChange.value = !showEmailChange.value;
+  newEmailInput.value = '';
+  confirmNewEmailInput.value = '';
+  changePasswordInput.value = '';
+};
+
+// Firebase 錯誤代碼 → 中文訊息（改信箱這條路專用）
+const emailChangeErrorMessage = (code) => {
+  switch (code) {
+    case 'no-password-provider':
+      return '此帳號是用 Google 登入的，信箱由 Google 帳號決定，無法在這裡更改。';
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return '密碼不正確，請重新輸入。';
+    case 'auth/email-already-in-use':
+      return '這個信箱已經被其他帳號使用了。';
+    case 'auth/invalid-email':
+      return '電子郵件格式不正確，請確認後再試一次。';
+    case 'auth/requires-recent-login':
+      return '登入狀態已過期，請登出後重新登入再試一次。';
+    case 'auth/too-many-requests':
+      return '嘗試次數過多，請稍後再試。';
+    default:
+      return '更改失敗，請稍後再試。';
+  }
+};
+
+const handleEmailChange = async () => {
+  if (!emailsMatch(newEmailInput.value, confirmNewEmailInput.value)) {
+    toast('兩次輸入的電子郵件不一致，請重新確認。');
+    return;
+  }
+  if (emailsMatch(newEmailInput.value, currentEmail.value)) {
+    toast('新信箱與目前的信箱相同，不需要更改。');
+    return;
+  }
+  changingEmail.value = true;
+  try {
+    const { ok, code } = await requestEmailChange(
+      auth.currentUser, newEmailInput.value, changePasswordInput.value
+    );
+    if (!ok) { toast(emailChangeErrorMessage(code)); return; }
+    // 變更是在使用者點下新信箱裡的連結時才套用，套用後這個工作階段會失效，
+    // 所以要先講清楚下一步是「用新信箱重新登入」，不然使用者會以為壞掉了。
+    toast('📩 確認信已寄到新信箱。點擊信中連結完成更改後，請用新信箱重新登入。');
+    showEmailChange.value = false;
+    newEmailInput.value = '';
+    confirmNewEmailInput.value = '';
+    changePasswordInput.value = '';
+  } finally {
+    changingEmail.value = false;
+  }
+};
+
 const refreshVerifyState = async () => {
   if (!auth.currentUser) { verifiedNow.value = null; return; }
   const { ok } = await ensureVerified(auth.currentUser);
@@ -442,6 +578,7 @@ const refreshVerifyState = async () => {
 
 const toggleAuthMode = () => {
   authMode.value = authMode.value === 'login' ? 'register' : 'login';
+  confirmEmailInput.value = '';
   passwordInput.value = '';
   confirmPasswordInput.value = '';
 };
@@ -450,6 +587,7 @@ const closeEmailForm = () => {
   showEmailForm.value = false;
   authMode.value = 'login';
   emailInput.value = '';
+  confirmEmailInput.value = '';
   passwordInput.value = '';
   confirmPasswordInput.value = '';
 };
@@ -516,6 +654,9 @@ const upsertUserDoc = async (fbUser) => {
     const keepCurrent = isVerified(current) && !isVerified(verify);
     await updateDoc(userRef, {
       lastLogin: serverTimestamp(),
+      // email 要跟著同步：使用者改過信箱後這裡若停在舊值，
+      // Admin.vue 用 email 找人設定管理員就會找不到。
+      email: fbUser.email,
       photoURL: fbUser.photoURL || userSnap.data().photoURL || '',
       verify: keepCurrent ? current : verify
     });
@@ -523,6 +664,12 @@ const upsertUserDoc = async (fbUser) => {
 };
 
 const handleEmailAuth = async () => {
+  // 信箱先擋：Firebase 只驗格式不驗存在，打錯網域一樣註冊成功，
+  // 驗證信寄向不存在的位址後帳號就此卡死（無法改信箱也無法自刪）。
+  if (authMode.value === 'register' && !emailsMatch(emailInput.value, confirmEmailInput.value)) {
+    toast('兩次輸入的電子郵件不一致，請重新確認。');
+    return;
+  }
   if (authMode.value === 'register' && passwordInput.value !== confirmPasswordInput.value) {
     toast('兩次輸入的密碼不一致，請重新確認。');
     return;
@@ -533,8 +680,12 @@ const handleEmailAuth = async () => {
       const result = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
       await upsertUserDoc(result.user);
       // 用節流版本寄送並記下時間，避免註冊後馬上點交易又重寄一封、讓這封先失效
-      await sendVerificationThrottled(result.user);
-      toast('註冊成功！我們已寄送驗證信到您的信箱。');
+      // 要接住 sent：寄失敗時不能照樣宣稱「已寄送」，否則使用者會一直空等一封
+      // 根本沒寄出去的信，也讓 SMTP 掛掉這種故障完全無法從使用者端察覺。
+      const { sent } = await sendVerificationThrottled(result.user);
+      toast(sent
+        ? '註冊成功！我們已寄送驗證信到您的信箱。'
+        : '註冊成功，但驗證信寄送失敗。請到個人頁點「重寄驗證信」再試一次。');
     } else {
       const result = await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
       await upsertUserDoc(result.user);
@@ -973,6 +1124,22 @@ const removeFavorite = async (fav) => {
   background: #fff; font-size: 14px; color: #2f4a3a; box-sizing: border-box; transition: 0.2s;
 }
 .email-input:focus { outline: none; border-color: #acc6b1; }
+.email-suggest {
+  margin: -2px 0 0; padding: 8px 10px; width: 100%;
+  border: 1px dashed #acc6b1; border-radius: 10px;
+  background: rgba(122, 158, 126, 0.10);
+  font-size: 13px; line-height: 1.5; color: #3f5c43; text-align: left; cursor: pointer;
+}
+.email-suggest b { display: block; margin: 2px 0; font-weight: 800; word-break: break-all; }
+.banner-link {
+  background: none; border: none; padding: 0; margin-left: 8px;
+  color: #6b7f6e; font-size: 12px; font-weight: 700; text-decoration: underline; cursor: pointer;
+}
+.email-change { display: flex; flex-direction: column; gap: 10px; margin: 10px 0 0; text-align: left; }
+.email-change-hint {
+  margin: 0; font-size: 12px; line-height: 1.6; color: #6b7f6e;
+}
+.email-change-hint b { color: #3f5c43; word-break: break-all; }
 
 .email-submit-btn {
   width: 100%; height: 50px; margin-top: 4px; background: #2f4a3a; color: #fff;
