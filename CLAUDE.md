@@ -8,7 +8,8 @@
 
 亞洲大學校園二手交易 PWA。Vue 3（Composition API / `<script setup>` / 無 TypeScript）+ Firebase（Auth／Firestore／Storage／Hosting／Functions，無自建後端 API）。
 
-- 正式站：https://yabuy-2026a.web.app
+- 正式站：https://yabuy-tw.com （自訂網域，Cloudflare DNS 必須關 Proxy 走 DNS only，見 [[自訂網域與寄信設定]]）
+- Firebase 預設網址：https://yabuy-2026a.web.app （同一份 Hosting，仍可用，腳本與舊連結指向這裡）
 - Firebase 專案 ID：`yabuy-2026a`
 - GitHub：https://github.com/Jerry-Yu-Abyss/yabuy-mvp
 - 一句話定位：滑卡瀏覽（首頁）＋條件搜尋＋校園面交（實體 QR 驗證）＋管理後台
