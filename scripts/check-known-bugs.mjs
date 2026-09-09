@@ -439,6 +439,38 @@ function checkSourceInvariants() {
         )
       : ok(`${col} 規則未退回寬鬆版本`);
   }
+
+  // 1-8 私訊過濾必須擋在「寫入函式裡」，不能只擋輸入框
+  //
+  // C-23／C-24／C-25 驗的是 chatFilter.js 本人，它們在 CannedChat.vue 忘記
+  // 呼叫過濾器時照樣全過——三項自動測全綠、聊天室卻能直接送出電話號碼。
+  // 這個缺口是人工驗證（2026-09-10，實機確認聊天室真的擋得住）才發現得了的，
+  // 這裡把它變成每次都跑得到的靜態檢查，不必再靠人記得去點一次。
+  //
+  // 為什麼看的是 can.js 而不是輸入框的 disabled：按鈕變灰擋得住用滑鼠點的人，
+  // 擋不住 Enter 送出、貼上後立刻送、或任何改動 UI 卻沒動到送出邏輯的重構。
+  // 唯一可靠的位置是「真的呼叫 addDoc 的那個函式」。
+  const canSrc = read('src/components/can.js');
+  const sendBody = extractFn(canSrc, 'sendChatMessage');
+  if (!sendBody) {
+    bad(
+      '找不到 sendChatMessage',
+      'src/components/can.js：函式被改名或刪除，請同步更新此檢查'
+    );
+  } else if (!sendBody.includes('inspectMessage')) {
+    bad(
+      '私訊送出路徑沒有經過過濾器',
+      'can.js 的 sendChatMessage 必須先呼叫 inspectMessage()：只靠輸入框的 disabled 擋不住 ' +
+        'Enter 送出與貼上即送，聯絡資訊會直接寫進 messages'
+    );
+  } else if (sendBody.indexOf('inspectMessage') > sendBody.indexOf('addDoc')) {
+    bad(
+      '私訊過濾發生在寫入之後',
+      'inspectMessage() 必須在 addDoc() 之前，否則訊息已經進資料庫了才判斷該不該擋'
+    );
+  } else {
+    ok('私訊送出路徑會先經過過濾器');
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────── */
