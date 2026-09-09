@@ -1,9 +1,19 @@
 // can.js
-// 罐頭訊息：交易時間前雙方的即時協調用語。只給預設短語，不開放自由輸入，
-// 避免面交協調管道被拿來做騷擾或私下議價（那些場景已有既有的「更改提案」流程）。
+// 面交前的私訊：交易時間前雙方的即時協調管道。
+//
+// 這裡原本只給六句固定短語、不開放自由輸入，用「輸入面積為零」換安全。現在改
+// 成自由輸入，那份安全要用別的東西補回來，分成三層：
+//   1. chatFilter.js  ——  偵測聯絡資訊與騷擾用語（含拆字、全形、逐字傳送）
+//   2. firestore.rules 的 chatTextOk() —— 同一批判斷的粗版，繞過前端也擋得住
+//   3. reports        ——  過濾器認不出來的，讓收訊的人自己檢舉
+// 另外訂單結束 24 小時後 Cloud Function 會清光這串對話（purgeClosedOrderMessages）。
+//
+// 下面的 CANNED_MESSAGES 留著，但性質變了：從「唯一能送的東西」變成「常用短語
+// 快捷鍵」，點一下直接送出，省得每次都要打字。
 
 import { db } from '@/firebase';
 import { collection, addDoc, doc, query, where, orderBy, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { inspectMessage } from './chatFilter.js';
 
 export const CANNED_MESSAGES = [
   '我到了，你在哪裡？',
@@ -31,13 +41,28 @@ export const subscribeOrderMessages = (orderId, callback, onError) => {
   );
 };
 
-export const sendCannedMessage = (orderId, senderId, text) =>
-  addDoc(collection(db, 'messages'), {
+/**
+ * 送出一則訊息。過濾在這裡再跑一次，不是只在 UI 跑——UI 的即時提示是為了讓
+ * 使用者邊打邊知道會不會被擋，但送出這條路徑不能依賴「畫面有沒有先擋住」。
+ * 兩邊都叫同一個 inspectMessage()，不會出現「輸入框說可以、送出卻被擋」。
+ *
+ * @param {Array} myRecent 我自己最近送出的訊息，交給跨訊息偵測用（逐字傳送）
+ * @throws {Error} 被擋下時丟出，message 就是給使用者看的理由
+ */
+export const sendChatMessage = (orderId, senderId, text, myRecent = []) => {
+  const verdict = inspectMessage(text, myRecent);
+  if (!verdict.ok) {
+    const err = new Error(verdict.reason);
+    err.code = 'chat/blocked';
+    throw err;
+  }
+  return addDoc(collection(db, 'messages'), {
     orderId,
     senderId,
-    text,
+    text: String(text).trim(),
     createdAt: serverTimestamp()
   });
+};
 
 /* ────────────────────────────────────────────────────────────────
    推遲面交時間的請求
@@ -87,3 +112,41 @@ export const acceptDelayRequest = (orderId, messageId, proposedTime) => {
 
 export const declineDelayRequest = (messageId) =>
   writeBatch(db).update(doc(db, 'messages', messageId), { requestStatus: 'declined' }).commit();
+
+/* ────────────────────────────────────────────────────────────────
+   檢舉
+   ────────────────────────────────────────────────────────────────
+   過濾器只攔得住有固定形狀的東西（電話號碼、平台名稱）。換句話說的騷擾、
+   施壓殺價、恐嚇，只有收訊的人自己認得出來——沒有這條通道的話，使用者唯一的
+   自救手段是取消交易，而取消會扣自己的額度，等於被騷擾還要自己付代價。
+
+   snapshot 是「當下這串對話」的副本。它存在的理由是 messages 會在訂單結束
+   24 小時後被清光，屆時管理員手上會什麼都不剩。它是檢舉人片面提供的，管理端
+   顯示時要當成「檢舉人的說法」；清除之前的查證仍然要看真正的 messages
+   （firestore.rules 已開放管理員讀取）。 */
+
+const SNAPSHOT_MAX = 100;
+
+// Firestore Timestamp 不能直接塞進陣列元素裡再送出去（serverTimestamp 不行，
+// Timestamp 物件則會讓 rules 的 list 大小判斷變複雜），統一轉成毫秒數字。
+const snapshotTime = (v) => {
+  if (typeof v?.toMillis === 'function') return v.toMillis();
+  if (v instanceof Date) return v.getTime();
+  return typeof v === 'number' ? v : null;
+};
+
+export const createReport = ({ orderId, reporterId, reportedId, reason, detail, messages }) =>
+  addDoc(collection(db, 'reports'), {
+    orderId,
+    reporterId,
+    reportedId,
+    reason,
+    detail: String(detail || '').trim(),
+    snapshot: (messages || []).slice(-SNAPSHOT_MAX).map((m) => ({
+      senderId: m.senderId || '',
+      text: String(m.text || ''),
+      createdAt: snapshotTime(m.createdAt)
+    })),
+    status: 'open',
+    createdAt: serverTimestamp()
+  });

@@ -13,6 +13,9 @@
         <div class="tab-switcher">
           <div class="tab-item" :class="{ active: currentTab === 'patrol' }" @click="switchTab('patrol')">商品巡邏</div>
           <div class="tab-item" :class="{ active: currentTab === 'users' }" @click="switchTab('users')">用戶管理</div>
+          <div class="tab-item" :class="{ active: currentTab === 'reports' }" @click="switchTab('reports')">
+            檢舉<span v-if="openReportCount" class="tab-badge">{{ openReportCount }}</span>
+          </div>
           <div class="tab-item" :class="{ active: currentTab === 'audit' }" @click="switchTab('audit')">安全與交易日誌</div>
           <div class="tab-item" :class="{ active: currentTab === 'broadcast' }" @click="switchTab('broadcast')">系統公告</div>
           <div class="tab-item" :class="{ active: currentTab === 'ads' }" @click="switchTab('ads')">廣告管理</div>
@@ -195,7 +198,85 @@
         </div>
       </template>
 
-      <!-- 3. 安全與交易日誌 -->
+      <!-- 3. 檢舉 -->
+      <template v-if="currentTab === 'reports'">
+        <div class="audit-panel-header">
+          <div class="panel-desc-group">
+            <h3>⚠️ 私訊檢舉</h3>
+            <p>
+              自由私訊的過濾器只擋得住有固定形狀的東西（電話、平台名稱）。
+              換句話說的騷擾、施壓、恐嚇只有收訊的人認得出來，這裡是那條通道。
+              附的對話是<b>檢舉人送出的副本</b>，訂單結束 24 小時內可回頭查真正的訊息。
+            </p>
+          </div>
+          <div class="audit-filter-bar">
+            <button
+              v-for="f in [['open', '待處理'], ['actioned', '已處置'], ['dismissed', '已駁回'], ['all', '全部']]"
+              :key="f[0]"
+              class="filter-chip"
+              :class="{ active: reportFilter === f[0] }"
+              @click="reportFilter = f[0]"
+            >{{ f[1] }}</button>
+          </div>
+        </div>
+
+        <div v-if="loadingReports" class="state-hint">
+          <div class="loader-dots"><span>.</span><span>.</span><span>.</span></div>
+          <p>載入檢舉紀錄中...</p>
+        </div>
+
+        <div v-else-if="filteredReports.length === 0" class="state-hint empty">
+          <div class="empty-icon">🕊️</div>
+          <p>{{ reportFilter === 'open' ? '沒有待處理的檢舉' : '沒有符合條件的檢舉' }}</p>
+        </div>
+
+        <div v-else class="admin-product-list">
+          <div v-for="r in filteredReports" :key="r.id" class="admin-item-card report-card">
+            <div class="report-row-head">
+              <span class="report-reason-tag">{{ r.reason }}</span>
+              <span class="report-status" :class="r.status">{{ REPORT_STATUS_LABEL[r.status] || r.status }}</span>
+            </div>
+
+            <div class="report-meta">
+              <div><b>檢舉人</b>：{{ userLabel(r.reporterId) }}</div>
+              <div><b>被檢舉</b>：{{ userLabel(r.reportedId) }}</div>
+              <div><b>訂單</b>：{{ r.orderId }}</div>
+              <div><b>時間</b>：{{ formatReportTime(r.createdAt) }}</div>
+            </div>
+
+            <p v-if="r.detail" class="report-detail-text">「{{ r.detail }}」</p>
+
+            <button class="report-toggle" @click="expandedReport = expandedReport === r.id ? null : r.id">
+              {{ expandedReport === r.id ? '收合對話' : `展開對話（${(r.snapshot || []).length} 則）` }}
+            </button>
+
+            <div v-if="expandedReport === r.id" class="report-snapshot">
+              <p v-if="!(r.snapshot || []).length" class="report-snapshot-empty">檢舉時沒有任何訊息。</p>
+              <div
+                v-for="(m, i) in (r.snapshot || [])"
+                :key="i"
+                class="snap-row"
+                :class="{ reported: m.senderId === r.reportedId }"
+              >
+                <span class="snap-who">{{ m.senderId === r.reportedId ? '被檢舉' : '檢舉人' }}</span>
+                <span class="snap-text">{{ m.text }}</span>
+              </div>
+            </div>
+
+            <div v-if="r.status === 'open'" class="report-actions">
+              <button class="report-act dismiss" :disabled="reportBusy === r.id" @click="resolveReport(r, 'dismissed')">駁回</button>
+              <button class="report-act action" :disabled="reportBusy === r.id" @click="resolveReport(r, 'actioned')">標記已處置</button>
+              <button class="report-act ban" :disabled="reportBusy === r.id" @click="banFromReport(r)">停權被檢舉人</button>
+            </div>
+            <p v-else class="report-handled">
+              {{ REPORT_STATUS_LABEL[r.status] }}　{{ formatReportTime(r.handledAt) }}
+              <span v-if="r.handleNote">·{{ r.handleNote }}</span>
+            </p>
+          </div>
+        </div>
+      </template>
+
+      <!-- 4. 安全與交易日誌 -->
       <template v-if="currentTab === 'audit'">
         <div class="audit-panel-header">
           <div class="panel-desc-group">
@@ -534,6 +615,105 @@ const currentTab = ref('patrol');
 const switchTab = (tabName) => {
   console.log(`👉 [YaBuy 偵錯] 用戶點擊分頁標籤，切換至: 【${tabName}】`);
   currentTab.value = tabName;
+};
+
+/* ================= ⚠️ 私訊檢舉 =================
+   自由私訊開放之後，chatFilter.js 擋得住的只有「有固定形狀」的東西——電話
+   號碼、平台名稱、拆字寫法。換句話說的騷擾、施壓殺價、恐嚇，過濾器認不出來，
+   只有收訊的人自己知道。沒有這條通道的話，被騷擾的人唯一的自救手段是取消
+   交易，而取消會扣自己的額度，等於被騷擾還要自己付代價。
+
+   對話快照是檢舉人送上來的，是他的說法不是證據；訂單結束 24 小時內
+   （purgeClosedOrderMessages 清掉之前）管理員可以直接讀 messages 查證。 */
+const REPORT_STATUS_LABEL = {
+  open: '待處理',
+  actioned: '已處置',
+  dismissed: '已駁回'
+};
+
+const loadingReports = ref(true);
+const allReports = ref([]);
+const reportFilter = ref('open');
+const expandedReport = ref(null);
+const reportBusy = ref(null);
+let unsubscribeReports = null;
+
+const fetchReports = () => {
+  loadingReports.value = true;
+  const q = query(collection(db, 'reports'), orderBy('createdAt', 'desc'));
+  unsubscribeReports = onSnapshot(q, (snap) => {
+    allReports.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    loadingReports.value = false;
+  }, (err) => {
+    console.error('[Admin] 檢舉監聽失敗（規則）：', err.code, err.message);
+    loadingReports.value = false;
+  });
+};
+
+const filteredReports = computed(() =>
+  reportFilter.value === 'all'
+    ? allReports.value
+    : allReports.value.filter((r) => r.status === reportFilter.value)
+);
+
+// 分頁標籤上的數字：待處理的檢舉沒人看就等於沒有檢舉機制，讓它在切進來之前
+// 就看得到。
+const openReportCount = computed(
+  () => allReports.value.filter((r) => r.status === 'open').length
+);
+
+// 檢舉存的是 uid，管理員看得懂的是暱稱。users 已經在同一個畫面監聽了，直接查。
+const userLabel = (uid) => {
+  if (!uid) return '（不明）';
+  const u = allUsers.value.find((x) => x.id === uid);
+  return u ? `${u.displayName || '校園用戶'}（${uid.slice(0, 6)}…）` : uid;
+};
+
+const formatReportTime = (ts) => {
+  const ms = typeof ts?.toMillis === 'function' ? ts.toMillis() : null;
+  return ms ? new Date(ms).toLocaleString('zh-TW', { hour12: false }) : '—';
+};
+
+const resolveReport = async (r, status, note = '') => {
+  if (reportBusy.value) return;
+  reportBusy.value = r.id;
+  try {
+    await updateDoc(doc(db, 'reports', r.id), {
+      status,
+      handledBy: auth.currentUser?.uid || null,
+      handledAt: serverTimestamp(),
+      handleNote: note
+    });
+    await writeAuditLog(
+      'admin',
+      status === 'actioned' ? '檢舉處置' : '檢舉駁回',
+      `檢舉理由「${r.reason}」，被檢舉人 UID: ${r.reportedId}，訂單 ${r.orderId}。` +
+        (note ? `\n處置：${note}` : ''),
+      { targetUserId: r.reportedId }
+    );
+    toast(status === 'actioned' ? '✅ 已標記為已處置' : '✅ 已駁回此檢舉');
+  } catch (e) {
+    console.error('[Admin] 更新檢舉狀態失敗：', e.code, e.message);
+    toast('❌ 操作失敗：' + e.message);
+  } finally {
+    reportBusy.value = null;
+  }
+};
+
+// 停權與結案是同一個決定的兩半，分開按會留下「停權了但檢舉還掛在待處理」
+// 這種狀態。走既有的 toggleBlacklist 以免停權邏輯出現第二份。
+const banFromReport = async (r) => {
+  const target = allUsers.value.find((u) => u.id === r.reportedId);
+  if (!target) { toast('❌ 找不到被檢舉的使用者，可能帳號已被刪除。'); return; }
+  if (target.status === 'banned') {
+    await resolveReport(r, 'actioned', '該帳號已在停權中');
+    return;
+  }
+  await toggleBlacklist(target);
+  // toggleBlacklist 可能被使用者在確認框按取消，成功了才把檢舉一起結案
+  if (allUsers.value.find((u) => u.id === r.reportedId)?.status === 'banned') {
+    await resolveReport(r, 'actioned', '已停權被檢舉人');
+  }
 };
 
 // ================= 🌟 0. 安全與交易日誌（日誌核心） =================
@@ -1201,6 +1381,7 @@ onMounted(() => {
   fetchAllUsers();
   fetchAllBroadcasts();
   fetchAuditLogs();
+  fetchReports();
   fetchAllAds();
   refreshClaimStatus();
   subscribeTradeSettings();
@@ -1211,6 +1392,7 @@ onUnmounted(() => {
   if (unsubscribeUsers) unsubscribeUsers();
   if (unsubscribeBroadcasts) unsubscribeBroadcasts();
   if (unsubscribeAuditLogs) unsubscribeAuditLogs();
+  if (unsubscribeReports) unsubscribeReports();
   if (unsubscribeAdsList) unsubscribeAdsList();
 });
 </script>
@@ -1227,6 +1409,34 @@ onUnmounted(() => {
 .tab-switcher { margin: 0 16px; background: rgba(255,255,255,0.08); height: 44px; border-radius: 14px; display: flex; padding: 4px; gap: 2px; }
 .tab-item { flex: 1; display: flex; justify-content: center; align-items: center; font-size: 10px; font-weight: 800; color: #aaa; border-radius: 10px; cursor: pointer; transition: 0.2s; white-space: nowrap; padding: 0 2px; text-align: center; }
 .tab-item.active { background: #333; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+/* 待處理檢舉的數字：沒人看到的檢舉機制等於沒有檢舉機制 */
+.tab-badge { margin-left: 3px; background: #d32f2f; color: #fff; border-radius: 999px; padding: 1px 5px; font-size: 9px; font-weight: 900; }
+
+/* ==================== 檢舉 ==================== */
+.report-card { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.report-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.report-reason-tag { background: #fff1ed; color: #b23c17; border-radius: 8px; padding: 4px 9px; font-size: 12px; font-weight: 900; }
+.report-status { font-size: 11px; font-weight: 900; padding: 3px 8px; border-radius: 8px; }
+.report-status.open { background: #fff3e0; color: #e65100; }
+.report-status.actioned { background: #e8f5e9; color: #2e7d32; }
+.report-status.dismissed { background: #eceff1; color: #607d8b; }
+.report-meta { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: #666; line-height: 1.5; word-break: break-all; }
+.report-detail-text { margin: 0; padding: 9px 11px; background: #fafafa; border-left: 3px solid #ffcfc2; border-radius: 0 8px 8px 0; font-size: 12.5px; color: #444; line-height: 1.6; }
+.report-toggle { align-self: flex-start; border: 1px solid #ddd; background: #fff; color: #555; border-radius: 8px; padding: 5px 10px; font-size: 11.5px; font-weight: 800; cursor: pointer; }
+.report-snapshot { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; background: #fafafa; border-radius: 10px; padding: 10px; }
+.report-snapshot-empty { margin: 0; font-size: 11.5px; color: #999; }
+.snap-row { display: flex; gap: 7px; font-size: 12px; line-height: 1.5; }
+.snap-who { flex-shrink: 0; font-size: 10px; font-weight: 900; color: #888; padding-top: 2px; }
+.snap-row.reported .snap-who { color: #d32f2f; }
+.snap-row.reported .snap-text { font-weight: 700; color: #222; }
+.snap-text { color: #444; word-break: break-word; }
+.report-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.report-act { flex: 1; min-width: 88px; height: 34px; border-radius: 9px; font-size: 11.5px; font-weight: 850; cursor: pointer; border: 1px solid transparent; }
+.report-act:disabled { opacity: 0.5; cursor: not-allowed; }
+.report-act.dismiss { background: #fff; border-color: #ddd; color: #666; }
+.report-act.action { background: #2e7d32; color: #fff; }
+.report-act.ban { background: #d32f2f; color: #fff; }
+.report-handled { margin: 0; font-size: 11px; color: #888; }
 
 .admin-content-area { flex: 1; overflow-y: auto; padding: 16px 16px 100px; }
 /* 指標分頁：Indicate 自帶 padding，外層不重複加 */

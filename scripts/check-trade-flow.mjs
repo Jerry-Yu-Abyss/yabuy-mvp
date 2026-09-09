@@ -1184,6 +1184,176 @@ const eq = (label, actual, expected) =>
     'inMaintenance() 讀的是即時的 settings/trade，不需要重新部署規則'
   );
 
+  /* ─────────────────────────────────────────────────────────────
+     12. 自由私訊的內容過濾與檢舉（規則層）
+     ─────────────────────────────────────────────────────────────
+     私訊從「六句固定短語」改成自由輸入之後，chatFilter.js 的偵測全都在前端，
+     繞過前端直接打 REST 一行都不會跑。這一節驗的就是「繞過前端之後還剩下
+     什麼」——也就是 firestore.rules 的 chatTextOk()。 */
+  section('12. 自由私訊的內容過濾與檢舉（規則層）');
+
+  const CID = 'order-chat-1';
+  await setDoc(`orders/${CID}`, orderBase, buyer.token);
+  await updateDoc(`orders/${CID}`, { status: 'accepted' }, seller.token);
+
+  const msg = (id, fields, token = buyer.token) =>
+    setDoc(`messages/${id}`, {
+      orderId: CID,
+      senderId: buyer.uid,
+      createdAt: new Date(),
+      ...fields,
+    }, token);
+
+  expectAllowed(
+    '一般訊息送得出去',
+    await msg('chat-ok-1', { text: '我在圖書館一樓等你' }),
+    'chatTextOk 不該擋住正常對話'
+  );
+
+  expectAllowed(
+    '單一個中文字送得出去',
+    await msg('chat-ok-2', { text: '好' }),
+    '擋的是單一英數字元（逐字傳送的最小單位），中文單字沒有那個用途'
+  );
+
+  expectDenied(
+    '含 LINE 的訊息被擋（繞過前端也擋得住）',
+    await msg('chat-line', { text: '加我line abc' }),
+    'chatTextOk 的短 token 比對，前端的 chatFilter.js 只是體驗層'
+  );
+
+  expectDenied(
+    '含 instagram 的訊息被擋',
+    await msg('chat-ig', { text: 'my instagram is yabuy' }),
+    'chatTextOk 的長字串比對'
+  );
+
+  expectDenied(
+    '手機號碼被擋',
+    await msg('chat-phone', { text: '0912345678' }),
+    '8 個數字擠在一起就是電話號碼的形狀'
+  );
+
+  expectDenied(
+    '用空格分隔的手機號碼一樣被擋',
+    await msg('chat-phone2', { text: '09 12 34 56 78' }),
+    'regex 允許數字之間夾最多 2 個非數字，分隔符躲不掉'
+  );
+
+  expectDenied(
+    '單一個英文字母被擋',
+    await msg('chat-single', { text: 'a' }),
+    '逐字傳送聯絡資訊的最小單位，擋掉它才逼得出「兩字元一則」的節奏'
+  );
+
+  expectDenied(
+    '超長訊息被擋（200 字上限）',
+    await msg('chat-long', { text: '嗨'.repeat(201) }),
+    '原本 text 連型別都沒驗，可以塞 1MB 字串進來'
+  );
+
+  expectDenied(
+    '夾帶白名單外的欄位被擋',
+    await msg('chat-extra', { text: '你好', contact: '0912345678' }),
+    'create 原本沒有欄位白名單，聯絡資訊改放在別的欄位就完全繞過過濾'
+  );
+
+  // 這一條是整節最關鍵的：推遲請求是唯一豁免內容過濾的訊息，如果 kind:'delay'
+  // 可以配任意 text，那它就是一個現成的後門——把聯絡資訊寫進 text 就送出去了。
+  expectDenied(
+    'kind=delay 不能拿來當夾帶聯絡資訊的後門',
+    await msg('chat-fakedelay', {
+      text: '加我line abc123',
+      kind: 'delay',
+      proposedTime: '2026-08-20 16:30',
+      requestStatus: 'pending',
+    }),
+    'delayMsgOk 要求 text 一字不差等於由 proposedTime 組出來的那句話'
+  );
+
+  expectDenied(
+    '推遲請求的 proposedTime 格式不符時被擋',
+    await msg('chat-baddelay', {
+      text: '⏰ 希望推遲至 明天下午 面交，可以嗎？',
+      kind: 'delay',
+      proposedTime: '明天下午',
+      requestStatus: 'pending',
+    }),
+    'proposedTime 必須是 YYYY-MM-DD HH:mm，否則 orders.time 會被寫進垃圾'
+  );
+
+  note(
+    '管理員讀 messages（檢舉查證用）沒有被驗到：emulator helper 沒有辦法產生帶 ' +
+      'admin custom claim 的 idToken。規則已寫在 messages.read 的 isAdmin() 分支。'
+  );
+
+  // ── 前端不可竄改對話清除排程 ──
+  expectDenied(
+    '當事人不可自己寫 chatPurgeAt',
+    await updateDoc(`orders/${CID}`, { chatPurgeAt: new Date(Date.now() + 9e11) }, buyer.token),
+    'chatPurgeFieldsKept：能寫的話就能把清除時間推到天邊，對話永遠不會被刪'
+  );
+
+  expectDenied(
+    '當事人不可自己把 chatPurged 設成 true',
+    await updateDoc(`orders/${CID}`, { chatPurged: true }, seller.token),
+    'chatPurgeFieldsKept：設成 true 會讓排程跳過這筆，同樣清不掉'
+  );
+
+  // ── 檢舉 ──
+  const reportBase = {
+    orderId: CID,
+    reporterId: buyer.uid,
+    reportedId: seller.uid,
+    reason: '騷擾、辱罵或不當言論',
+    detail: '對方一直要我加他的通訊軟體',
+    snapshot: [{ senderId: seller.uid, text: '加我好友', createdAt: Date.now() }],
+    status: 'open',
+    createdAt: new Date(),
+  };
+
+  expectAllowed(
+    '當事人可以檢舉對方',
+    await setDoc('reports/rep-1', reportBase, buyer.token),
+    '過濾器認不出來的騷擾，只剩這條通道'
+  );
+
+  expectDenied(
+    '第三者不能對別人的訂單提出檢舉',
+    await setDoc('reports/rep-third', { ...reportBase, reporterId: third.uid }, third.token),
+    'reports.create 用 isOrderParty() 判定，否則誰都能對任何人送檢舉'
+  );
+
+  expectDenied(
+    '不能冒用別人的身分送檢舉',
+    await setDoc('reports/rep-spoof', reportBase, seller.token),
+    'reporterId 必須等於 auth.uid，否則可以偽造「對方檢舉了自己」'
+  );
+
+  expectDenied(
+    '不能檢舉自己',
+    await setDoc('reports/rep-self', { ...reportBase, reportedId: buyer.uid }, buyer.token),
+    'reportedId != auth.uid'
+  );
+
+  expectDenied(
+    '被檢舉人讀不到檢舉內容',
+    await getDoc('reports/rep-1', seller.token),
+    'reports.read 只給檢舉人本人與管理員——被檢舉人看得到的話會直接引發報復'
+  );
+
+  expectAllowed(
+    '檢舉人讀得到自己送出的檢舉',
+    await getDoc('reports/rep-1', buyer.token),
+    '不然使用者不知道有沒有送成功、處理到哪'
+  );
+
+  expectDenied(
+    '檢舉人不能自己把檢舉標記成已處置',
+    await updateDoc('reports/rep-1', { status: 'actioned' }, buyer.token),
+    'reports.update 限 isAdmin()，狀態是管理員的判斷不是當事人的'
+  );
+
   /* ── 總結 ──────────────────────────────────────────────────── */
   console.log(C.b('\n─────────────────────────────────────────────'));
   console.log(C.b(`結果  通過 ${pass} 項，失敗 ${fail} 項`));

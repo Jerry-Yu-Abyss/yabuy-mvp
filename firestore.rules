@@ -133,6 +133,21 @@ service cloud.firestore {
             && request.resource.data.get('productId', '') == resource.data.get('productId', '');
       }
 
+      // 對話清除排程用的兩個欄位，只有 Cloud Function 寫得動（Admin SDK 繞過
+      // 規則）。onOrderClosed 在訂單走到終止態時寫入 chatPurgeAt（= 結束後 24
+      // 小時）與 chatPurged=false，purgeClosedOrderMessages 掃到時間就刪光這筆
+      // 訂單的 messages 並把 chatPurged 設回 true。
+      //
+      // 前端能寫的話有兩個方向的濫用：把 chatPurgeAt 往後推到天邊，對話就永遠
+      // 不會被清除（等於「交易結束刪對話」這個承諾對想留存的人不生效）；或把
+      // chatPurged 直接設成 true，讓排程跳過這筆，同樣清不掉。
+      function chatPurgeFieldsKept() {
+        return request.resource.data.get('chatPurgeAt', null)
+                 == resource.data.get('chatPurgeAt', null)
+            && request.resource.data.get('chatPurged', null)
+                 == resource.data.get('chatPurged', null);
+      }
+
       // 改期次數上限：賣家 1 次、買家 2 次。
       // 原本這條**只在 Mailbox.vue 前端擋**，繞過前端直接打 REST 就能把
       // negotiationStep 設成任意值、無限改期。規則層只接受兩種情況：
@@ -260,6 +275,7 @@ service cloud.firestore {
         && request.resource.data.productId is string
         && request.resource.data.productId != ''
         && sellerOwnsProduct(request.resource.data.productId)
+        && !request.resource.data.keys().hasAny(['chatPurgeAt', 'chatPurged'])
         && notTradeBanned()
         && !inMaintenance();
 
@@ -267,7 +283,7 @@ service cloud.firestore {
         isAdmin()
         || (isParty() && immutablePartiesKept() && negotiationStepOk()
             && statusFlowOk() && finalPriceOk() && delayUsedOk()
-            && cancelActorOk() && maintenanceAllows())
+            && cancelActorOk() && maintenanceAllows() && chatPurgeFieldsKept())
       );
 
       // 目前沒有任何地方會刪除訂單，不開放
@@ -331,14 +347,86 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 罐頭訊息（新交易流程的面交前即時協調）。訊息本身沒存買賣雙方 uid，
-    // 靠 isOrderParty() 回頭查 orders 判斷讀寫資格——只有這筆訂單的買家/賣家
-    // 能看到、能發言，原本任何登入者都能讀寫任何一筆訊息。
+    // 面交前的私訊。訊息本身沒存買賣雙方 uid，靠 isOrderParty() 回頭查 orders
+    // 判斷讀寫資格——只有這筆訂單的買家/賣家能看到、能發言，原本任何登入者都
+    // 能讀寫任何一筆訊息。
     match /messages/{messageId} {
-      allow read: if request.auth != null && isOrderParty(resource.data.orderId);
+      // ⚠️ 內容過濾：這裡是「自由輸入」唯一擋得住的地方。
+      //
+      // 前端（chatFilter.js）做的是完整偵測——全形還原、拆字還原、跨訊息拼接，
+      // 但那全部繞得過：直接對 Firestore REST 打一筆 addDoc，前端一行都不會跑。
+      // 私下要到 LINE／IG 之後交易就離開平台了，面交驗證、爽約記次、檢舉、評價
+      // 一起失效，所以這條不能只靠前端自律。
+      //
+      // 規則層做得到的偵測比前端粗很多（沒有字串正規化、沒有跨文件查詢，
+      // regex 是 RE2 且 matches() 是整串比對，所以每條都要自己包 .*）：
+      //   1. 欄位白名單 —— 原本完全沒驗，可以夾帶任意欄位進來
+      //   2. 長度上下限 —— 原本 text 連型別都沒驗，可以塞 1MB 字串
+      //   3. 單一個英數字元 —— 這是「一則傳一個字」繞過偵測的最小單位。
+      //      擋掉它，繞過的成本就被推高到「至少兩字元一則」，那個節奏會落進
+      //      前端的跨訊息視窗裡。中文單字（「好」「嗯」）不受影響。
+      //   4. 8 個數字擠在一起（中間最多隔 2 個非數字）—— 電話號碼的形狀
+      //   5. 平台名稱與聯絡字眼的粗篩
+      //
+      // 前端與這裡的關係必須是 **這裡擋的 ⊆ 前端擋的**：反過來的話使用者會
+      // 送出一則前端放行、規則層回 403 的訊息，畫面只能顯示「送出失敗」而說不
+      // 出原因。chatFilter.js 的 rulesWouldBlock() 就是下面這幾條的鏡像，
+      // 兩邊改動要一起改。
+      function chatTextOk(t) {
+        return t is string
+            && t.size() > 0
+            && t.size() <= 200
+            // 3. 單一英數字元（含全形）
+            && !t.matches('^[0-9A-Za-z０-９Ａ-Ｚａ-ｚ]$')
+            // 4. 電話號碼形狀
+            && !t.matches('(?s).*[0-9]([^0-9]{0,2}[0-9]){7}.*')
+            // 5. 明確的平台／聯絡字眼（長字串，當子字串比對就不會誤傷）
+            && !t.lower().matches(
+                 '(?s).*(instagram|facebook|messenger|wechat|weixin|telegram' +
+                 '|whatsapp|discord|kakao|snapchat|gmail|http|www\\.' +
+                 '|微信|賴|加我|私訊|電話|手機|帳號).*')
+            // 5b. 短 token 要求前後不是英文字母，否則 online 會被 line 誤傷、
+            //     big 會被 ig 誤傷。中文字元算「非英文字母」，所以「加我line」
+            //     照樣抓得到。
+            && !t.lower().matches('(?s)(.*[^a-z])?(line|ig|fb|tg|dc|qq|id)([^a-z].*)?');
+      }
+
+      // 管理員讀得到：檢舉進來時要看得到真正的對話，不能只看檢舉人自己送上來
+      // 的那份快照（那是他自己寫的，可以造假）。原本這條只有 isOrderParty()，
+      // 內容是六句固定短語時無所謂，開放自由輸入之後就等於平台對騷擾申訴
+      // 完全沒有查證能力。
+      allow read: if request.auth != null
+        && (isOrderParty(resource.data.orderId) || isAdmin());
+
+      // 一般訊息：四個欄位，內容過過濾器
+      function plainMsgOk() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['orderId', 'senderId', 'text', 'createdAt'])
+            && chatTextOk(d.text);
+      }
+
+      // 推遲請求是唯一豁免內容過濾的訊息，而豁免有代價：它的 text 帶著完整的
+      //「2026-09-09 15:00」，剛好就是 8 個數字的電話號碼形狀，過得了過濾器
+      // 才有鬼。所以改成更嚴的驗法——text 必須「一字不差等於」由 proposedTime
+      // 組出來的那句話。這比過濾器嚴格得多：連一個字都不能自由發揮，也就
+      // 不可能拿 kind:'delay' 當夾帶聯絡資訊的後門。
+      // 字串要與 can.js 的 sendDelayRequest() 完全一致，改一邊就會全部寫不進去。
+      function delayMsgOk() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['orderId', 'senderId', 'text', 'createdAt',
+                                 'kind', 'proposedTime', 'requestStatus'])
+            && d.kind == 'delay'
+            && d.requestStatus == 'pending'
+            && d.proposedTime is string
+            && d.proposedTime.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$')
+            && d.text == '⏰ 希望推遲至 ' + d.proposedTime + ' 面交，可以嗎？';
+      }
+
       allow create: if request.auth != null
         && request.resource.data.senderId == request.auth.uid
-        && isOrderParty(request.resource.data.orderId);
+        && request.resource.data.orderId is string
+        && isOrderParty(request.resource.data.orderId)
+        && (plainMsgOk() || delayMsgOk());
 
       // 原本是 update: if false。「希望推遲至 X 點面交」需要收訊的一方能回覆
       // 同意／婉拒，所以得開一條縫，範圍鎖到最小：
@@ -357,6 +445,47 @@ service cloud.firestore {
         && resource.data.get('requestStatus', '') == 'pending'
         && request.resource.data.requestStatus in ['accepted', 'declined'];
 
+      allow delete: if false;
+    }
+
+    // 檢舉。開放自由私訊之後，過濾器擋得住「聯絡資訊」這種有固定形狀的東西，
+    // 擋不住換句話說的騷擾、恐嚇、殺價施壓——那些只有收訊的人自己認得出來。
+    // 沒有這條通道的話，使用者唯一的自救手段是取消交易，而取消會扣自己的額度。
+    match /reports/{reportId} {
+      // snapshot 是檢舉人自己送上來的對話副本，用途是「訊息被清掉之後仍有東西
+      // 可看」（訂單結束 24 小時後 purgeClosedOrderMessages 會刪光 messages）。
+      // 它是檢舉人的片面說法，不是證據——規則層沒有辦法驗證它與真實訊息一致。
+      // 真正的查證靠上面 messages 的 isAdmin() 讀取權限，在清除之前都查得到。
+      allow create: if request.auth != null
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.reportedId != request.auth.uid
+        && request.resource.data.orderId is string
+        && isOrderParty(request.resource.data.orderId)
+        && request.resource.data.status == 'open'
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 60
+        && request.resource.data.get('detail', '') is string
+        && request.resource.data.get('detail', '').size() <= 500
+        && request.resource.data.snapshot is list
+        && request.resource.data.snapshot.size() <= 100
+        && request.resource.data.keys().hasOnly(
+             ['orderId', 'reporterId', 'reportedId', 'reason', 'detail',
+              'snapshot', 'status', 'createdAt', 'handledBy', 'handledAt',
+              'handleNote']);
+
+      // 檢舉人看得到自己送出的（才知道有沒有送成功、處理到哪）；管理員看得到全部
+      allow read: if request.auth != null
+        && (isAdmin() || resource.data.reporterId == request.auth.uid);
+
+      // 只有管理員能結案。檢舉人不能自己改狀態，被檢舉人更不能——
+      // 而且連檢舉人都不能撤回或竄改內容（update 的欄位鎖到處理欄位）。
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'handledBy', 'handledAt', 'handleNote'])
+        && request.resource.data.status in ['open', 'actioned', 'dismissed'];
+
+      // 檢舉紀錄是後續爭議的依據，誰都不能刪
       allow delete: if false;
     }
 

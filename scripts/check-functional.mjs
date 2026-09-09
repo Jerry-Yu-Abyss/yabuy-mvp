@@ -403,6 +403,55 @@ const CASES = [
       '「一鍵清除某用戶的所有商品」走同一條路',
     runner: RUNNER.DUO,
   },
+  {
+    id: 'C-23',
+    area: 'C. 交易邏輯',
+    title: '私訊過濾：聯絡資訊與規避手法一律擋下',
+    expect:
+      '電話（含全形、空格分隔、中文數字）、LINE／IG／FB 等平台名稱（含拆字寫法）、' +
+      '網址、email、單一個英數字元、常見騷擾用語，全部無法送出',
+    runner: RUNNER.AUTO,
+    fn: async () => runFilterCases(FILTER_MUST_BLOCK, true),
+  },
+  {
+    id: 'C-24',
+    area: 'C. 交易邏輯',
+    title: '私訊過濾：正常對話不被誤判',
+    expect:
+      '六句常用短語、以及「白色」「裸機」「幹嘛」「online」「deadline」「第一次」' +
+      '這類含有敏感子字串的正常句子，都必須送得出去',
+    runner: RUNNER.AUTO,
+    fn: async () => runFilterCases(FILTER_MUST_PASS, false),
+  },
+  {
+    id: 'C-25',
+    area: 'C. 交易邏輯',
+    title: '私訊過濾：逐字傳送會被跨訊息偵測攔下',
+    expect:
+      '把手機號碼拆成「09」「12」「34」…分多則送出，單看每一則都無辜，' +
+      '但串起來會拼出號碼，第 4 則之前就要被擋下；超過 10 分鐘的舊訊息不牽連',
+    runner: RUNNER.AUTO,
+    fn: async () => checkCrossMessageFilter(),
+  },
+  {
+    id: 'C-26',
+    area: 'C. 交易邏輯',
+    title: '檢舉送得出去，管理端看得到',
+    expect:
+      '聊天室右上 ⚠️ 選理由後送出 → 管理控制台「檢舉」分頁出現該筆（標籤上有待處理數字），' +
+      '展開看得到對話快照；駁回／標記已處置／停權被檢舉人三顆按鈕都會寫進稽核紀錄',
+    runner: RUNNER.DUO,
+  },
+  {
+    id: 'C-27',
+    area: 'C. 交易邏輯',
+    title: '交易結束 24 小時後對話自動清除',
+    expect:
+      '訂單轉成 completed／rejected／failed／expired 時，onOrderClosed 會寫入 ' +
+      'chatPurgeAt（+24h）與 chatPurged=false；24 小時後 purgeClosedOrderMessages ' +
+      '刪光該訂單的 messages 並把 chatPurged 設為 true。前端寫不動這兩個欄位',
+    runner: RUNNER.DUO,
+  },
 
   /* ───── D. 資料庫互動 ───── */
   {
@@ -530,6 +579,118 @@ function balanced(src, from) {
     }
   }
   return src.slice(from);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   C-23 / C-24 / C-25：私訊過濾
+   ════════════════════════════════════════════════════════════════
+   直接載入 src/components/chatFilter.js 本人來跑，不重寫一份判斷邏輯——
+   測試複製一份規則的話，改了程式碼卻沒改測試時它照樣全過。
+
+   chatFilter.js 是 ESM 而這個 repo 的 package.json 沒有 type:module，
+   直接 import 一支 .js 會被當成 CommonJS 而語法錯誤。它沒有任何 import，
+   所以用 data: URL 當成模組載入是安全的（不會連帶拉進 firebase）。 */
+let filterModPromise = null;
+const loadChatFilter = () => {
+  if (!filterModPromise) {
+    const src = read('src/components/chatFilter.js');
+    filterModPromise = import(
+      'data:text/javascript;charset=utf-8;base64,' + Buffer.from(src, 'utf8').toString('base64')
+    );
+  }
+  return filterModPromise;
+};
+
+// 每一筆都是 [訊息, 這筆在測什麼]。加新的規避手法時往這裡加，不要另開檔案。
+const FILTER_MUST_BLOCK = [
+  ['0912345678', '手機號碼'],
+  ['09 12 34 56 78', '空格分隔的手機'],
+  ['０９１２３４５６７８', '全形手機'],
+  ['零九一二三四五六七八', '中文數字手機'],
+  ['我的line是abc123', 'LINE'],
+  ['l i n e id: abc', '拆字 LINE'],
+  ['加我賴啦', '「賴」的諧音寫法'],
+  ['ig: yabuy_tw', 'IG'],
+  ['我的IG是abc', '大寫 IG'],
+  ['加我好友', '加好友'],
+  ['打電話給我', '電話'],
+  ['a', '單一英文字母（逐字傳送的最小單位）'],
+  ['7', '單一數字'],
+  ['０', '全形單一數字'],
+  ['你這個智障', '辱罵'],
+  ['約砲嗎', '性騷擾'],
+  ['https://t.me/abc', '外部連結'],
+  ['abc@gmail.com', 'email'],
+  ['2026-09-09 14:30', '完整日期（8 位數字，與電話同形；已知且刻意接受的誤判）'],
+];
+
+const FILTER_MUST_PASS = [
+  ['我到了，你在哪裡？', '常用短語'],
+  ['我快到了，請稍等一下', '常用短語'],
+  ['不好意思，我會晚 5-10 分鐘', '常用短語（含數字）'],
+  ['可以麻煩再確認一次地點嗎？', '常用短語'],
+  ['好的，沒問題', '常用短語'],
+  ['謝謝，辛苦了', '常用短語'],
+  ['東西還在嗎？', '一般詢問'],
+  ['可以算 1200 嗎', '議價金額'],
+  ['9/9 下午兩點可以嗎', '口語日期'],
+  ['請問是白色的嗎', '「色」不可誤判成色情'],
+  ['這台是裸機嗎', '「裸」不可誤判成裸照'],
+  ['你在幹嘛', '「幹」不可誤判成辱罵'],
+  ['第一次來這裡買', '中文數字「一」不可當阿拉伯數字'],
+  ['我要買兩個', '「兩」同上'],
+  ['online course 的書', 'online 不可誤判成 line'],
+  ['This is a big one', 'big 不可誤判成 ig'],
+  ['please wait', 'please 不可被讀成數字串'],
+  ['書況如何？有畫線嗎', '「畫線」不可誤判成 LINE'],
+  ['deadline 是明天', 'deadline 不可誤判成 line'],
+  ['09', '單獨兩碼數字本身無辜（靠跨訊息視窗抓）'],
+];
+
+async function runFilterCases(cases, shouldBlock) {
+  const { inspectMessage } = await loadChatFilter();
+  const wrong = [];
+  for (const [text, why] of cases) {
+    const blocked = !inspectMessage(text).ok;
+    if (blocked !== shouldBlock) wrong.push(`${JSON.stringify(text)}（${why}）`);
+  }
+  return wrong.length === 0
+    ? [true, `${cases.length} 筆全部符合預期`]
+    : [
+        false,
+        `${wrong.length}/${cases.length} 筆不符：${shouldBlock ? '應擋未擋' : '誤判擋下'} → ${wrong.join('、')}`,
+      ];
+}
+
+async function checkCrossMessageFilter() {
+  const { inspectMessage } = await loadChatFilter();
+  const problems = [];
+
+  // 把 0912345678 拆成五則兩碼送出：單則都過得了，串起來必須被攔下
+  const sent = [];
+  let caughtAt = null;
+  for (const [i, chunk] of ['09', '12', '34', '56', '78'].entries()) {
+    if (!inspectMessage(chunk, sent).ok) { caughtAt = i + 1; break; }
+    sent.push({ text: chunk, createdAt: Date.now() });
+  }
+  if (caughtAt === null) problems.push('拆成五則兩碼的手機號碼整串送了出去');
+
+  // 拆字 line 同理
+  const sent2 = [];
+  let caught2 = false;
+  for (const chunk of ['li', 'ne', 'id', 'ab']) {
+    if (!inspectMessage(chunk, sent2).ok) { caught2 = true; break; }
+    sent2.push({ text: chunk, createdAt: Date.now() });
+  }
+  if (!caught2) problems.push('拆成兩字一則的 line 沒有被攔下');
+
+  // 視窗要會過期：20 分鐘前的舊訊息不該把現在這則拖下水
+  const old = [{ text: '09', createdAt: Date.now() - 20 * 60 * 1000 }];
+  if (!inspectMessage('12', old).ok) problems.push('20 分鐘前的舊訊息仍被串進偵測視窗（會誤判正常對話）');
+
+  return problems.length === 0
+    ? [true, `逐字傳送在第 ${caughtAt} 則被擋下，舊訊息不牽連`]
+    : [false, problems.join('；')];
 }
 
 /**

@@ -520,6 +520,112 @@ export const onOrderCancelled = onDocumentUpdated(
   }
 );
 
+// ── 面交對話的清除 ────────────────────────────────────────────────
+// 訊息從「六句固定短語」變成自由私訊之後，這串對話裡會有什麼就不再可預期了：
+// 住哪一棟、幾點下課、長什麼樣子、為什麼急著賣。交易結束之後那些沒有任何理由
+// 繼續留在資料庫裡，而且雙方是陌生人——留著只有風險沒有用途。
+//
+// 為什麼不是「結束的當下就刪」：刪掉的同時也刪掉了檢舉的依據。被騷擾的人多半
+// 是回到宿舍冷靜下來才決定要檢舉，那時對話已經不在了。所以留一個 24 小時的
+// 窗口，兩件事都成立：檢舉來得及，隔天就查不到。
+//
+// 為什麼要分成 trigger + 排程兩支：trigger 只做「記下什麼時候該刪」這件很快
+// 的事，真正的刪除交給排程批次處理。把 24 小時的等待放在 trigger 裡不可能——
+// 函式沒有那種壽命。
+const CHAT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+// 四個終止態都算結束。expired 也在內：訂單一旦被「逾期關閉」，Mailbox.vue 的
+// 💬 按鈕就跟著整個區塊消失，對話已經進不去了，沒有留存的意義。
+// （時間過了但還沒按逾期關閉的訂單，status 仍是 accepted，不受影響——那正是
+// 用訊息協調推遲、把交易救回來的路徑。）
+const CLOSED_STATUSES = ["completed", "rejected", "failed", "expired"];
+
+export const onOrderClosed = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+
+    // 只在「這一次更新把它變成終止態」時標記。已經標過的不再動，否則終止態
+    // 訂單後續任何一次更新都會把清除時間往後推 24 小時，永遠刪不掉。
+    if (!CLOSED_STATUSES.includes(after.status as string)) return;
+    if (CLOSED_STATUSES.includes(before.status as string)) return;
+    if (after.chatPurgeAt) return;
+
+    await event.data?.after.ref.update({
+      chatPurgeAt: admin.firestore.Timestamp.fromMillis(
+        Date.now() + CHAT_RETENTION_MS,
+      ),
+      chatPurged: false,
+    });
+    console.log("已排定清除對話", event.params.orderId, after.status);
+  },
+);
+
+// 每小時整點過 15 分掃一次。頻率高一點的用意是讓「24 小時」真的接近 24 小時
+// ——每天只跑一次的話，運氣不好的訂單會留到將近 48 小時。
+export const purgeClosedOrderMessages = onSchedule(
+  {schedule: "15 * * * *", timeZone: "Asia/Taipei"},
+  async () => {
+    const db = admin.firestore();
+
+    // chatPurged == false 是 equality、chatPurgeAt <= now 是 range，
+    // 需要 (chatPurged, chatPurgeAt) 複合索引（見 firestore.indexes.json）。
+    const due = await db.collection("orders")
+      .where("chatPurged", "==", false)
+      .where("chatPurgeAt", "<=", admin.firestore.Timestamp.now())
+      .limit(200)
+      .get();
+
+    if (due.empty) {
+      console.log("沒有到期待清除的對話");
+      return;
+    }
+
+    let deleted = 0;
+    let purgedOrders = 0;
+    const failed: string[] = [];
+
+    for (const orderDoc of due.docs) {
+      try {
+        const msgs = await db.collection("messages")
+          .where("orderId", "==", orderDoc.id)
+          .get();
+
+        if (!msgs.empty) {
+          const writer = db.bulkWriter();
+          // 比照 purgeProduct：BulkWriter 預設會吞掉最後失敗的那幾筆，而
+          // 「以為刪乾淨了、其實沒有」正是這裡最不能發生的事。
+          const errors: string[] = [];
+          writer.onWriteError((err) => {
+            if (err.failedAttempts < 3) return true;
+            errors.push(err.documentRef.path);
+            return false;
+          });
+          msgs.docs.forEach((d) => writer.delete(d.ref));
+          await writer.close();
+          if (errors.length) throw new Error(`${errors.length} 筆刪除失敗`);
+          deleted += msgs.size;
+        }
+
+        // 只有真的刪乾淨才標記，否則下一輪還會再掃到這筆重試
+        await orderDoc.ref.update({chatPurged: true});
+        purgedOrders++;
+      } catch (err) {
+        console.error("清除對話失敗", orderDoc.id, err);
+        failed.push(orderDoc.id);
+      }
+    }
+
+    console.log("清除面交對話", {
+      orders: purgedOrders,
+      messages: deleted,
+      failed: failed.length,
+    });
+  },
+);
+
 // ── 商品完全刪除（管理端商品巡邏）────────────────────────────────
 // 巡邏刪掉一件不合適的商品時，原本只刪 products 那一份文件，商品在系統其他
 // 地方留下的分身都還在：別人的喜愛清單、雙方信箱裡的訂單、「已買入」與「已賣出」
