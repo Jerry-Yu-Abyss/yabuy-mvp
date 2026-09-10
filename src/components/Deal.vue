@@ -90,8 +90,9 @@
         <div></div>
       </div>
 
-      <template v-if="role === 'sell'">
-        <!-- 賣家在買家送出金額前，只需等待 -->
+      <template v-if="!iAmPayer">
+        <!-- 收錢的一方在付錢的一方送出金額前只需等待。一般交易是賣家等買家；
+             書本徵求剛好相反（徵求方付錢），所以問 tradeRoles 而不是看 role。 -->
         <div class="waiting-other price-wait">
           <span class="dot-pulse"></span>
           等待買家輸入成交金額...
@@ -108,7 +109,7 @@
         </div>
         <div class="waiting-other">
           <span class="dot-pulse"></span>
-          等待賣家確認金額...
+          等待{{ otherLabel }}確認金額...
         </div>
       </template>
 
@@ -185,7 +186,7 @@
 
       <!-- 交易評價 -->
       <div class="rate-box" v-if="!ratingDone">
-        <p class="rate-title">為這次交易的{{ role === 'buy' ? '賣家' : '買家' }}評分</p>
+        <p class="rate-title">為這次交易的{{ otherLabel }}評分</p>
         <div class="rate-stars">
           <span
             v-for="n in 5"
@@ -222,6 +223,7 @@ import { db, auth } from '@/firebase';
 import { doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { codeForLocationName, nameForLocationCode } from './TradePoints.js';
 import { enforceQrScan, tradeMaintenance, subscribeTradeSettings } from './tradeSettings.js';
+import { isPayer, isReceiver, counterpartLabel } from './tradeRoles.js';
 import DealTimeline from './DealTimeline.vue';
 
 const props = defineProps({
@@ -324,6 +326,12 @@ const myScanned    = computed(() => (props.role === 'buy' ? !!liveOrder.value.bu
 const otherScanned = computed(() => (props.role === 'buy' ? !!liveOrder.value.sellerScannedAt : !!liveOrder.value.buyerScannedAt));
 
 // 買家已送出金額、等待賣家確認（以 Firestore 快照為準，不看本地送出狀態）
+// 金流角色：誰填金額、誰確認成交。書本徵求把買賣雙方的金流方向對調，
+// 所以這兩個值一律問 tradeRoles.js，不要在這裡自己寫 role === 'buy'——
+// 漏改一處不會有測試變紅，只會有人付錯錢。
+const iAmPayer = computed(() => isPayer(liveOrder.value, props.role));
+const otherLabel = computed(() => counterpartLabel(liveOrder.value, props.role));
+
 const priceSubmitted = computed(() => Number(liveOrder.value.finalPrice) > 0);
 
 // 交易點掃描應比對的代碼：由訂單的 location 名稱查表得出
@@ -415,7 +423,7 @@ const syncStep = () => {
   const scanCleared = (!!o.buyerScannedAt && !!o.sellerScannedAt) || !enforceQrScan.value;
 
   if (bothReady && scanCleared) {
-    if (props.role === 'sell' && o.finalPrice) {
+    if (isReceiver(o, props.role) && o.finalPrice) {
       log('  💰 分支[可進入金額, 金額已送出] → step=seller-confirm-price');
       step.value = 'seller-confirm-price';
     } else {

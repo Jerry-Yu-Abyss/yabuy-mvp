@@ -565,6 +565,28 @@ export const onOrderClosed = onDocumentUpdated(
       chatPurged: false,
     });
     console.log("已排定清除對話", event.params.orderId, after.status);
+
+    // 書本徵求成交後把貼文關掉，別人就不會再應徵一本已經到手的書。
+    //
+    // 為什麼放這裡而不是讓前端做：關掉貼文的是「成交當下按下確認的人」，而在
+    // 徵求模式裡那個人是應徵者、不是貼文主人——book_requests 的 update 規則只
+    // 讓貼文主人自己動，前端寫不進去。這支函式走 Admin SDK 不受規則限制。
+    //
+    // 只有 completed 才關：被取消或逾期代表這次沒談成，徵求本身還在，貼文要
+    // 留著讓其他人能應徵。
+    if (after.status !== "completed") return;
+    const requestId = after.requestId;
+    if (after.mode !== "wanted") return;
+    if (typeof requestId !== "string" || !requestId) return;
+    try {
+      await admin.firestore()
+        .collection("book_requests").doc(requestId)
+        .update({status: "closed", closedAt: FieldValue.serverTimestamp()});
+      console.log("徵求貼文已關閉", requestId, event.params.orderId);
+    } catch (err) {
+      // 貼文可能已被主人自己刪掉——那不是錯誤，交易本身已經完成了
+      console.error("關閉徵求貼文失敗", requestId, err);
+    }
   },
 );
 

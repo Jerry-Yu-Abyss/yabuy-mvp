@@ -1,5 +1,15 @@
 <template>
   <div class="book-page-container" @touchmove.stop>
+    <!-- 兩個模式共用下面那排學院／系所篩選，切換時篩選條件不會被洗掉 -->
+    <div class="mode-switch">
+      <button class="mode-tab" :class="{ active: mode === 'browse' }" @click="mode = 'browse'">
+        📚 二手教科書
+      </button>
+      <button class="mode-tab" :class="{ active: mode === 'wanted' }" @click="mode = 'wanted'">
+        🔍 書本徵求
+      </button>
+    </div>
+
     <div class="filter-section">
       <div class="filter-row horizontal-scroll">
         <div 
@@ -45,6 +55,13 @@
     </div>
 
     <div class="book-grid-container">
+      <BookRequests
+        v-if="mode === 'wanted'"
+        :college="selectedCollege"
+        :dept="selectedDept"
+      />
+
+      <template v-else>
       <div v-if="loading" class="loading-state">
         <div class="mini-radar"></div>
         <p>正在搜尋亞大教科書...</p>
@@ -81,6 +98,7 @@
       </div>
       
       <div class="bottom-spacer"></div>
+      </template>
     </div>
 
     <TradeModal 
@@ -99,7 +117,12 @@ import { db, auth } from '@/firebase';
 import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
 import { subjectData } from './Subject.js'; 
 import TradeModal from './TradeModal.vue';
+import BookRequests from './BookRequests.vue';
 import { blockUnverifiedForTrade } from './verify.js';
+
+// 'browse' = 看別人上架的二手書（原本的行為）
+// 'wanted' = 書本徵求專區：自己貼出想要的書，有書的同學來應徵
+const mode = ref('browse');
 
 // --- 狀態管理 ---
 const books = ref([]);
@@ -210,6 +233,17 @@ onUnmounted(() => unsubscribe?.());
 </script>
 
 <style scoped>
+/* 模式切換 */
+.mode-switch { display: flex; gap: 6px; padding: 10px 14px 0; flex-shrink: 0; }
+.mode-tab {
+  flex: 1; height: 38px; border-radius: 12px;
+  border: 1.5px solid #e0e8e0; background: #fff;
+  color: #8a958d; font-size: 13px; font-weight: 850; cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.mode-tab.active { background: #2f4a3a; border-color: #2f4a3a; color: #fff; }
+@media (prefers-reduced-motion: reduce) { .mode-tab { transition: none; } }
+
 /* 繼承原本樣式並新增標籤樣式 */
 .book-page-container {
   position: absolute; inset: 0;

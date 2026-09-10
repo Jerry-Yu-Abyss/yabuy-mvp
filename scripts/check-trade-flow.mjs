@@ -1391,6 +1391,141 @@ const eq = (label, actual, expected) =>
     'reports.update 限 isAdmin()，狀態是管理員的判斷不是當事人的'
   );
 
+  /* ─────────────────────────────────────────────────────────────
+     13. 書本徵求：金流方向反轉（規則層）
+     ─────────────────────────────────────────────────────────────
+     這一節驗的是「錢的方向」。徵求模式下 buyerId 是發起者但收錢、
+     sellerId 是貼文主人但付錢——這與一般交易完全相反，而規則層是唯一
+     擋得住繞過前端的地方。漏掉這裡，付錯錢不會有任何檢查變紅。 */
+  section('13. 書本徵求：金流方向反轉（規則層）');
+
+  // 貼文主人是 seller（付錢方），應徵並發起訂單的是 buyer（收錢方）
+  await setDoc('book_requests/req-1', {
+    requesterId: seller.uid,
+    requesterName: '徵求方',
+    bookName: '離散數學',
+    college: '資訊電機學院',
+    dept: '資訊工程學系',
+    wantPrice: 300,
+    url: 'https://example.com/x.jpg',
+    status: 'open',
+    createdAt: new Date(),
+  }, seller.token);
+
+  expectDenied(
+    '不能冒用別人的身分發布徵求',
+    await setDoc('book_requests/req-spoof', {
+      requesterId: seller.uid, requesterName: '冒名', bookName: '線性代數',
+      college: '資訊電機學院', dept: '資訊工程學系', wantPrice: 200,
+      status: 'open', createdAt: new Date(),
+    }, buyer.token),
+    'requesterId 必須等於登入者本人'
+  );
+
+  expectDenied(
+    '願付金額不能超過成交價上限',
+    await setDoc('book_requests/req-rich', {
+      requesterId: buyer.uid, requesterName: '買家', bookName: '天價書',
+      college: '資訊電機學院', dept: '資訊工程學系', wantPrice: 99999,
+      status: 'open', createdAt: new Date(),
+    }, buyer.token),
+    '貼文寫得出來、面交時卻被 finalPriceOk 擋掉的話，人已經到現場了才發現'
+  );
+
+  expectDenied(
+    '應徵者不能關掉別人的徵求貼文',
+    await updateDoc('book_requests/req-1', { status: 'closed' }, buyer.token),
+    '不然可以把競爭對手的徵求關掉，讓別人應徵不到'
+  );
+
+  const wantedOrder = {
+    buyerId: buyer.uid, buyerName: '提供方',
+    sellerId: seller.uid, sellerName: '徵求方',
+    productId: '', productName: '離散數學', productPrice: 300,
+    location: '圖書館前', time: '2026-08-20 14:00',
+    originalTime: '2026-08-20 14:00',
+    status: 'pending', negotiationStep: 0,
+    mode: 'wanted', requestId: 'req-1',
+    createdAt: new Date(),
+  };
+
+  expectAllowed(
+    '有書的人可以應徵徵求貼文',
+    await setDoc('orders/order-wanted-1', wantedOrder, buyer.token),
+    '徵求訂單沒有 productId，改用 requestId 回頭驗 book_requests'
+  );
+
+  expectDenied(
+    '不能拿別人的徵求貼文把路人填成付錢方',
+    await setDoc('orders/order-wanted-bad', {
+      ...wantedOrder, sellerId: third.uid, requestId: 'req-1',
+    }, buyer.token),
+    'wantedRequestOk() 要求貼文的 requesterId 必須等於訂單的 sellerId'
+  );
+
+  expectDenied(
+    '徵求訂單不可以同時帶 productId',
+    await setDoc('orders/order-wanted-both', {
+      ...wantedOrder, productId: PID,
+    }, buyer.token),
+    '兩條路只能走一條，否則可以繞過 sellerOwnsProduct'
+  );
+
+  await updateDoc('orders/order-wanted-1', { status: 'accepted' }, seller.token);
+
+  expectDenied(
+    'mode 不可事後竄改',
+    await updateDoc('orders/order-wanted-1', { mode: '' }, seller.token),
+    '改得動的話，付錢的一方翻一下就變成收錢的一方，還能自己確認自己的交易'
+  );
+
+  // ── 金額：付錢的是徵求方（seller），不是發起訂單的 buyer ──
+  expectDenied(
+    '徵求模式下收錢方不能填金額',
+    await updateDoc('orders/order-wanted-1', { finalPrice: 300 }, buyer.token),
+    '一般交易是 buyer 填，徵求模式相反——finalPriceOk 要問 payerUid()'
+  );
+
+  expectAllowed(
+    '徵求模式下付錢方（貼文主人）才能填金額',
+    await updateDoc('orders/order-wanted-1', { finalPrice: 300 }, seller.token),
+    'payerUid() 在 mode==wanted 時回傳 sellerId'
+  );
+
+  // ── 成交：按下確認的是收錢方（buyer） ──
+  expectDenied(
+    '徵求模式下付錢方不能自己按成交',
+    await updateDoc('orders/order-wanted-1', { status: 'completed' }, seller.token),
+    '不然徵求方可以單方面把交易標成完成，對方連書都還沒拿到'
+  );
+
+  expectAllowed(
+    '徵求模式下收錢方才能按成交',
+    await updateDoc('orders/order-wanted-1', { status: 'completed' }, buyer.token),
+    'statusFlowOk 的 completed 分支要問 receiverUid()'
+  );
+
+  // ── 一般交易的方向沒有被這次改動弄反 ──
+  const DIRID = 'order-normal-direction';
+  await setDoc(`orders/${DIRID}`, orderBase, buyer.token);
+  await updateDoc(`orders/${DIRID}`, { status: 'accepted' }, seller.token);
+
+  expectDenied(
+    '一般交易：賣家不能填金額（方向沒被弄反）',
+    await updateDoc(`orders/${DIRID}`, { finalPrice: 350 }, seller.token),
+    '這條是回歸檢查——徵求功能不該把一般交易的金流方向改掉'
+  );
+  expectAllowed(
+    '一般交易：買家填金額仍然可以',
+    await updateDoc(`orders/${DIRID}`, { finalPrice: 350 }, buyer.token),
+    '同上'
+  );
+  expectDenied(
+    '一般交易：買家不能自己按成交',
+    await updateDoc(`orders/${DIRID}`, { status: 'completed' }, buyer.token),
+    '同上'
+  );
+
   /* ── 總結 ──────────────────────────────────────────────────── */
   console.log(C.b('\n─────────────────────────────────────────────'));
   console.log(C.b(`結果  通過 ${pass} 項，失敗 ${fail} 項`));

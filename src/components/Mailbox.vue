@@ -116,8 +116,17 @@
                   <span v-else>📦</span>
                 </div>
                 <div class="prod-text">
+                  <!-- 徵求訂單的分頁歸屬看的是「誰發起」，不是「誰付錢」：
+                       徵求方坐在 sellerId 的位子，所以會出現在「收到訂單」，
+                       但他其實是付錢的一方。標籤與稱呼負責把這件事講清楚。 -->
+                  <span v-if="modeBadge(order)" class="mode-badge">{{ modeBadge(order) }}</span>
                   <h3 class="prod-name">{{ order.productName }}</h3>
-                  <span class="prod-price">${{ order.productPrice }}</span>
+                  <span class="prod-price">
+                    ${{ order.productPrice }}
+                    <em v-if="isWantedOrder(order)" class="price-role">
+                      · 你{{ isPayer(order, activeTab) ? '付款' : '收款' }}
+                    </em>
+                  </span>
                 </div>
               </div>
 
@@ -163,7 +172,7 @@
                 </div>
 
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'buyer'" class="btn-group-column">
-                  <div class="info-bubble buyer-offer">買家提出了新提案，請確認</div>
+                  <div class="info-bubble buyer-offer">{{ counterpartLabel(order, 'sell') }}提出了新提案，請確認</div>
                   <div class="btn-group">
                     <button class="btn-secondary" :disabled="actionFrozen(order.id)" @click="rejectOrder(order)">婉拒</button>
                     <button class="btn-primary" :disabled="actionFrozen(order.id)" @click="acceptOrder(order)">接受方案</button>
@@ -171,13 +180,13 @@
                 </div>
 
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'seller'" class="btn-group-column">
-                  <div class="info-bubble waiting">⏳ 已送出新方案，等待買家回覆</div>
+                  <div class="info-bubble waiting">⏳ 已送出新方案，等待{{ counterpartLabel(order, 'sell') }}回覆</div>
                 </div>
               </template>
 
               <template v-if="activeTab === 'buy' && !isExpired(order)">
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'seller'" class="btn-group-column">
-                  <div class="info-bubble seller-offer">賣家提議了新時間地點</div>
+                  <div class="info-bubble seller-offer">{{ counterpartLabel(order, 'buy') }}提議了新時間地點</div>
                   <div class="btn-group">
                     <button class="btn-outline" :disabled="actionFrozen(order.id)" @click="startNegotiate(order)">再改一次</button>
                     <button class="btn-primary" :disabled="actionFrozen(order.id)" @click="acceptOrder(order)">接受方案</button>
@@ -185,7 +194,7 @@
                 </div>
 
                 <div v-if="order.status === 'negotiating' && order.lastActionBy === 'buyer'" class="btn-group-column">
-                  <div class="info-bubble waiting">⏳ 已送出新提案，等待賣家回覆</div>
+                  <div class="info-bubble waiting">⏳ 已送出新提案，等待{{ counterpartLabel(order, 'buy') }}回覆</div>
                 </div>
               </template>
 
@@ -280,6 +289,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import DealPage from './Deal.vue';
 import CannedChat from './CannedChat.vue';
+import { modeBadge, counterpartLabel, isPayer, isWantedOrder } from './tradeRoles.js';
 import { auth, db } from '@/firebase';
 import { collection, query, where, onSnapshot, orderBy, updateDoc, getDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -718,6 +728,14 @@ onUnmounted(() => {
   display: flex; flex-direction: column; gap: 10px;
   padding: 0 12px 14px;
 }
+
+.mode-badge {
+  display: inline-block; margin-bottom: 3px;
+  padding: 2px 7px; border-radius: 6px;
+  background: #eef4ef; color: #3d5f4a;
+  font-size: 10.5px; font-weight: 850; letter-spacing: .02em;
+}
+.price-role { font-style: normal; font-size: 11px; font-weight: 800; color: #b26a00; }
 
 /* 單則訊息卡 */
 .msg-item {

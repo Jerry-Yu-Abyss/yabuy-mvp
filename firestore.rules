@@ -130,7 +130,26 @@ service cloud.firestore {
       function immutablePartiesKept() {
         return request.resource.data.get('buyerId', '') == resource.data.get('buyerId', '')
             && request.resource.data.get('sellerId', '') == resource.data.get('sellerId', '')
-            && request.resource.data.get('productId', '') == resource.data.get('productId', '');
+            && request.resource.data.get('productId', '') == resource.data.get('productId', '')
+            // mode 決定金流方向（誰填金額、誰按成交）。可以改的話，付錢的一方
+            // 只要把它翻過去就變成收錢的一方，還能自己確認自己的交易。
+            && request.resource.data.get('mode', '') == resource.data.get('mode', '');
+      }
+
+      // ── 金流方向 ────────────────────────────────────────────────
+      // 一般上架：buyerId 付錢、sellerId 收錢。
+      // 書本徵求（mode=='wanted'）：徵求方貼文求書並付錢，有書的人應徵並收錢。
+      // 因為 orders.create 綁死「發起者一定是 buyerId」，應徵的人只能坐 buyerId
+      // 這個位子，所以徵求模式下 buyerId 是「發起者」而不是「付錢的人」。
+      // 前端對應的實作在 src/components/tradeRoles.js，兩邊要同步。
+      function isWantedOrder() {
+        return resource.data.get('mode', '') == 'wanted';
+      }
+      function payerUid() {
+        return isWantedOrder() ? resource.data.sellerId : resource.data.buyerId;
+      }
+      function receiverUid() {
+        return isWantedOrder() ? resource.data.buyerId : resource.data.sellerId;
       }
 
       // 對話清除排程用的兩個欄位，只有 Cloud Function 寫得動（Admin SDK 繞過
@@ -188,6 +207,19 @@ service cloud.firestore {
                  .data.get('sellerId', '') == request.resource.data.sellerId;
       }
 
+      // 書本徵求的訂單沒有 products 文件可以指，改成回頭查 book_requests：
+      //   - 貼文必須存在且還開著（成交後會被關掉，不能再被應徵）
+      //   - 貼文的擁有者必須就是這筆訂單的 sellerId
+      //     ——否則可以拿別人的徵求貼文、把 sellerId 填成任意路人，
+      //       讓那個人莫名其妙變成要付錢的一方
+      function wantedRequestOk(reqId) {
+        let path = /databases/$(database)/documents/book_requests/$(reqId);
+        return exists(path)
+            && get(path).data.get('status', '') == 'open'
+            && get(path).data.get('requesterId', '') ==
+               request.resource.data.sellerId;
+      }
+
       // 訂單狀態機（見 docs/wiki/交易生命週期.md）。原本規則層完全不管 status，
       // 買家可以自己把訂單一路改成 completed、成交價填天文數字，而
       // getRankingStats / getPublicStats 都是直接讀 orders 算出來的——等於
@@ -211,8 +243,10 @@ service cloud.firestore {
             || (prev == 'accepted'
                 && (next == 'rejected' || next == 'failed' || next == 'expired'))
             // 成交：限賣家確認，且買家必須已填過有效成交價
+            // 成交由「收錢的一方」按下：他確認自己真的收到這個金額。
+            // 徵求模式下收錢的是應徵者（buyerId），不是貼文的徵求方。
             || (prev == 'accepted' && next == 'completed'
-                && request.auth.uid == resource.data.sellerId
+                && request.auth.uid == receiverUid()
                 && resource.data.get('finalPrice', 0) is number
                 && resource.data.get('finalPrice', 0) > 0);
         // completed / rejected / failed 是終止態：只剩 next == prev 會過
@@ -250,12 +284,14 @@ service cloud.firestore {
         let stage = resource.data.get('status', '');
         let prev = resource.data.get('finalPrice', null);
         let next = request.resource.data.get('finalPrice', prev);
+        // 填金額的是付錢的人、退回的是收錢的人——徵求模式下這兩個角色會對調，
+        // 所以這裡問 payerUid()/receiverUid()，不直接寫 buyerId/sellerId。
         return next == prev
             || (stage == 'accepted'
-                && request.auth.uid == resource.data.buyerId
+                && request.auth.uid == payerUid()
                 && next is number && next > 0 && next <= 10000)
             || (stage == 'accepted'
-                && request.auth.uid == resource.data.sellerId
+                && request.auth.uid == receiverUid()
                 && next == null);
       }
 
@@ -272,9 +308,20 @@ service cloud.firestore {
         && request.resource.data.get('status', '') == 'pending'
         && request.resource.data.get('negotiationStep', 0) == 0
         && !('finalPrice' in request.resource.data)
-        && request.resource.data.productId is string
-        && request.resource.data.productId != ''
-        && sellerOwnsProduct(request.resource.data.productId)
+        && request.resource.data.get('mode', '') in ['', 'wanted']
+        && (
+          // 一般上架：賣家必須真的擁有那件商品
+          (request.resource.data.get('mode', '') != 'wanted'
+            && request.resource.data.productId is string
+            && request.resource.data.productId != ''
+            && sellerOwnsProduct(request.resource.data.productId))
+          // 書本徵求：沒有商品文件可以指，改回頭驗徵求貼文
+          || (request.resource.data.get('mode', '') == 'wanted'
+            && request.resource.data.get('productId', '') == ''
+            && request.resource.data.requestId is string
+            && request.resource.data.requestId != ''
+            && wantedRequestOk(request.resource.data.requestId))
+        )
         && !request.resource.data.keys().hasAny(['chatPurgeAt', 'chatPurged'])
         && notTradeBanned()
         && !inMaintenance();
@@ -288,6 +335,42 @@ service cloud.firestore {
 
       // 目前沒有任何地方會刪除訂單，不開放
       allow delete: if false;
+    }
+
+    // 書本徵求貼文。與 products 分開存放，理由是它不是一件「可以買的商品」：
+    // 混進 products 的話，首頁滑卡、搜尋、排行榜、公開統計、管理端的連鎖刪除
+    // 每一處查詢都要記得排除它，漏掉一處就會有人在首頁滑到一張根本不存在的書。
+    //
+    // 誰能關掉貼文：只有貼文主人自己，或 Cloud Function（Admin SDK 繞過規則，
+    // onOrderClosed 成交時會關掉它）。應徵者不能關——不然有人可以把別人的徵求
+    // 貼文關掉，讓其他競爭者應徵不到。
+    match /book_requests/{requestId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.requesterId == request.auth.uid
+        && request.resource.data.get('status', '') == 'open'
+        && request.resource.data.bookName is string
+        && request.resource.data.bookName.size() > 0
+        && request.resource.data.bookName.size() <= 60
+        && request.resource.data.college is string
+        && request.resource.data.dept is string
+        // 願付金額的上限與 finalPriceOk 的成交價上限一致。這裡放得比較寬的話，
+        // 貼文寫得出來的價格會在面交輸入金額時被規則擋掉，人已經到現場了才發現。
+        && request.resource.data.wantPrice is number
+        && request.resource.data.wantPrice > 0
+        && request.resource.data.wantPrice <= 10000
+        && !('closedAt' in request.resource.data)
+        && !inMaintenance();
+
+      // 貼文主人只能改內容或自己關掉，不能把 requesterId 換成別人
+      allow update: if request.auth != null
+        && resource.data.requesterId == request.auth.uid
+        && request.resource.data.requesterId == resource.data.requesterId
+        && request.resource.data.get('status', '') in ['open', 'closed'];
+
+      allow delete: if request.auth != null
+        && (resource.data.requesterId == request.auth.uid || isAdmin());
     }
 
     match /favorites/{favId} {

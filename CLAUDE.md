@@ -46,8 +46,9 @@
 
 - 兩份回歸測試都在：`npm run check:bugs`（事故驅動，42 項全過）／`npm run check:func`（功能標準，45 項，7 自動 + 需人工驗證的分區清楚標在腳本輸出裡）
 - 檢查已拆成離線／線上兩條：`check:code`（F1 原始碼 16 項 + F2 靜態案例 + F5 交易流程，commit 閘門用這條）／`check:prod`（規則、線上資料、部署產物 23 項）；`npm run check` 兩者都跑
-- **第三份檢查 `npm run check:trade`（129 項）需要 Firebase Emulator**：驗交易狀態機與安全規則，是唯一能用「第三個登入帳號」測隔離的一層。先 `npm run emu`（需 JDK）再跑；沒開 emulator 時 `check:code` 會自動 skip，不會擋 commit。第 9 節驗 Cloud Function 的逾期記次，要用 `npm run emu:fn`（含 functions emulator）才跑得到，只開 `emu` 會註記略過
+- **第三份檢查 `npm run check:trade`（143 項）需要 Firebase Emulator**：驗交易狀態機與安全規則，是唯一能用「第三個登入帳號」測隔離的一層。先 `npm run emu`（需 JDK）再跑；沒開 emulator 時 `check:code` 會自動 skip，不會擋 commit。第 9 節驗 Cloud Function 的逾期記次，要用 `npm run emu:fn`（含 functions emulator）才跑得到，只開 `emu` 會註記略過
 - Firestore 規則已版控（`firestore.rules`）；**Storage 規則尚未版控**，看不到現況，見 [[已知問題]]
 - 已知死碼：`Heart.vue`／`activeTab === 'heart'` 沒有任何按鈕會觸發，收藏功能改走 `User.vue` 的「喜愛」分頁
 - Cloud Functions（`functions/src/index.ts`）：callable 是 `addAdminRole`、`backfillUserDocs`、`getRankingStats`、`getPublicStats`、`purgeProduct`（管理端刪商品時的連鎖刪除）、`previewStaleUnverifiedUsers`；Firestore trigger 是 `onReviewCreated`、`onOrderExpired`、`onOrderCancelled`（後兩支負責記次）、`onOrderClosed`（訂單走到終止態時排定清除對話）；排程是 `purgeStaleUnverifiedUsers`、`purgeClosedOrderMessages`（每小時掃，刪掉結束滿 24 小時的訂單訊息）；另有 `resendWebhook`（HTTP，退信）
+- **教科書區有兩個模式**：原本的二手書瀏覽，以及**書本徵求**（`BookRequests.vue`）。徵求方貼出想要的書並付錢，有書的人應徵並收錢——**金流方向與一般交易相反**。因為 `orders.create` 綁死「發起者＝buyerId」，應徵者只能坐 buyerId 的位子，所以徵求模式下 buyerId 是發起者兼收錢方、sellerId 是貼文主人兼付錢方。**任何地方要判斷誰填金額／誰按成交／對方怎麼稱呼，一律問 `tradeRoles.js`**，不要自己寫 `role === 'buy'`——漏改一處不會有測試變紅，只會有人付錯錢。規則層有對應的 `payerUid()` / `receiverUid()`，兩邊要同步。信箱分頁維持「誰發起」的語意不變，靠卡片標籤消歧義
 - **面交私訊是自由輸入的**，安全靠三層：`chatFilter.js`（偵測聯絡資訊／騷擾，含拆字與逐字傳送）＋ `firestore.rules` 的 `chatTextOk()`（繞過前端也擋得住）＋ `reports` 檢舉。**兩層過濾的關係必須是「規則層擋的 ⊆ 前端擋的」**，反過來使用者會吃到說不出原因的 403。細節見 [[資料模型]] 與 [[驗證與權限]]
