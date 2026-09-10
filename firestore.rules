@@ -235,8 +235,9 @@ service cloud.firestore {
       // 買家可以自己把訂單一路改成 completed、成交價填天文數字，而
       // getRankingStats / getPublicStats 都是直接讀 orders 算出來的——等於
       // 排行榜、循環利用金額、首頁「已流通件數」全部可被單方面偽造。
-      // 這裡把合法轉移列成白名單，關鍵是 completed 只有賣家能按（對應
-      // Deal.vue 的 seller-confirm-price 畫面，買家單方面成交不了）。
+      // 這裡把合法轉移列成白名單，關鍵是 completed 只有「收錢的一方」能按
+      // （對應 Deal.vue 的 seller-confirm-price 畫面，付錢的一方單方面成交
+      // 不了）。一般交易的收錢方是賣家，書本徵求則是應徵者——見 receiverUid()。
       function statusFlowOk() {
         let prev = resource.data.get('status', '');
         let next = request.resource.data.get('status', prev);
@@ -253,8 +254,8 @@ service cloud.firestore {
             // 只有 accepted 能變 expired，且 expired 之後誰也改不動。
             || (prev == 'accepted'
                 && (next == 'rejected' || next == 'failed' || next == 'expired'))
-            // 成交：限賣家確認，且買家必須已填過有效成交價
-            // 成交由「收錢的一方」按下：他確認自己真的收到這個金額。
+            // 成交由「收錢的一方」按下：他確認自己真的收到這個金額，
+            // 且付錢的一方必須已填過有效成交價。
             // 徵求模式下收錢的是應徵者（buyerId），不是貼文的徵求方。
             || (prev == 'accepted' && next == 'completed'
                 && request.auth.uid == receiverUid()
@@ -287,8 +288,10 @@ service cloud.firestore {
             || request.resource.data.get('status', '') == 'rejected';
       }
 
-      // 成交價：只有買家能填（Deal.vue 的 price 步驟），只有賣家能退回成 null
-      // （sellerConfirmPrice(false)），而且都必須發生在 accepted 階段。
+      // 成交價：只有「付錢的一方」能填（Deal.vue 的 price 步驟），只有「收錢的
+      // 一方」能退回成 null（sellerConfirmPrice(false)），而且都必須發生在
+      // accepted 階段。一般交易的付錢方是買家，書本徵求則是貼文的徵求方
+      // ——所以下面問 payerUid() / receiverUid()，不寫死 buyerId / sellerId。
       // 上限與 Deal.vue 的 MAX_PRICE 一致——那邊只是前端擋，繞過就能寫進天文
       // 數字，把排行榜的「循環利用金額」灌到失真。兩邊改動要同步。
       function finalPriceOk() {
