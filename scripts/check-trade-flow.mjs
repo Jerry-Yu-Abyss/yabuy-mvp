@@ -334,6 +334,27 @@ const eq = (label, actual, expected) =>
 
   await setDoc(`users/${seller.uid}`, { id: seller.uid, email: seller.email, ratingSum: 0, ratingCount: 0 }, seller.token);
 
+  // 個資的第一道門：users 文件只有本人與管理員讀得到。
+  // 這條收緊過兩次（if true → 登入就行 → 本人或管理員）。前兩版的問題是同一
+  // 個：門檻低到任何人都能匯出全校的 email、學院與爽約次數。放行這條的唯一
+  // 理由曾經是「前端某處要讀」——實際上前端每一處讀 users 都是自己的文件，
+  // 唯一整批讀的 Indicate.vue 掛在管理端底下。
+  expectAllowed(
+    '本人讀得到自己的 users 文件',
+    await getDoc(`users/${seller.uid}`, seller.token),
+    '個人資料頁、爽約次數、評分彙總都靠這條'
+  );
+  expectDenied(
+    '別的登入者讀不到他人的 users 文件（email 等個資）',
+    await getDoc(`users/${seller.uid}`, buyer.token),
+    '開放註冊的校園站，「有帳號」不該等於「能匯出全校通訊錄」'
+  );
+  expectDenied(
+    '第三者更不可能讀到',
+    await getDoc(`users/${seller.uid}`, third.token),
+    '同上'
+  );
+
   // 評價文件 id 固定為 `${orderId}_${raterId}`：唯一性由 rules 直接驗 id 組成，
   // 一筆訂單每人只能評一次，不靠前端自律（Deal.vue 已改用 setDoc 帶這個 id）。
   const REV = `${OID}_${buyer.uid}`;

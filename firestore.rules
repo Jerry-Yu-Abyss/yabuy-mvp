@@ -37,9 +37,20 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      // email 等個資只給登入者看（原本 if true 讓沒登入的人也能撈到全站 email
-      // 清單），一般瀏覽（首頁商品等）本來就不靠讀這個 collection，不受影響。
-      allow read: if request.auth != null;
+      // 只有本人與管理員讀得到。
+      //
+      // 這條收緊過兩次。原本是 `if true`——沒登入的人都能撈到全站 email 清單。
+      // 接著改成 `if request.auth != null`，但那還是不夠：任何一個學生登入後
+      // 都能 getDocs(collection(db,'users')) 匯出全校的 email、真實姓名、學院、
+      // 爽約次數。門檻只是「有帳號」，而這是個開放註冊的校園站。
+      //
+      // 收到「本人或管理員」不會弄壞任何畫面，因為前端根本沒有讀別人 users
+      // 文件的需求：商品與訂單都把 sellerName / buyerName 存成快照，評分彙總
+      // 由 Cloud Function 算，排行榜與首頁統計走 getRankingStats /
+      // getPublicStats（Admin SDK 繞過規則）。唯一整批讀的是 Indicate.vue，
+      // 而它掛在 Admin.vue 底下、只有管理員打得開。
+      allow read: if request.auth != null
+        && (request.auth.uid == uid || isAdmin());
       // create 原本沒有任何欄位限制（見 docs/wiki/已知問題.md 第 9 條）。這裡
       // 至少先把爽約欄位堵住：還沒有 users 文件的人若能自己建一份帶
       // expireCount: 0 的文件，等於憑空清掉紀錄。update 那條擋得住既有文件，
