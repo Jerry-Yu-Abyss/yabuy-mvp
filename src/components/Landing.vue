@@ -120,6 +120,45 @@
       </div>
     </section>
 
+    <!-- 安全與隱私 -->
+    <section class="section reveal">
+      <p class="sec-eyebrow">你的安全</p>
+      <h2 class="sec-title">把風險擋在見面之前</h2>
+      <div class="idea-grid">
+        <div class="idea-card glass">
+          <div class="idea-icon">🕶️</div>
+          <h3>不必交換個資</h3>
+          <p>
+            全程只以「買家／賣家」相稱，不顯示姓名；書本徵求也不會記錄是誰在找書。
+            你的電子郵件與個人資料只有你自己看得到，評價內容不公開。
+            如果對方想把你帶離平台去要 LINE 或電話，訊息會被系統擋下 ——
+            離開了平台，下面這些保護就都不算數了。
+          </p>
+        </div>
+        <div class="idea-card glass">
+          <div class="idea-icon">🕕</div>
+          <h3>只在白天面交</h3>
+          <p>
+            面交時間限定 06:00–18:00，約在深夜的預約會被直接攔下。
+            這不是不方便 —— 而是不讓「太晚了，不好意思拒絕」變成一種壓力。
+            需要改時間也走系統，雙方各有一次推遲額度，不用私下喬。
+          </p>
+        </div>
+        <div class="idea-card glass">
+          <div class="idea-icon">📍</div>
+          <h3>只約校園公共場所</h3>
+          <p>
+            地點從圖書館、美術館、管理學院、鳥籠、築夢與感恩學院宿舍中挑，
+            不能自己填地址。都是走路可到、人來人往的地方 ——
+            你不需要讓任何人知道你住哪裡。
+          </p>
+        </div>
+      </div>
+      <p class="safety-note">
+        交易結束 24 小時後，雙方的對話會自動清除。若過程中遇到騷擾，聊天室內可直接檢舉。
+      </p>
+    </section>
+
     <!-- PWA 設置短片 -->
     <section class="section reveal" id="pwa">
       <p class="sec-eyebrow">像 App 一樣使用</p>
@@ -618,6 +657,11 @@ onUnmounted(() => { io?.disconnect(); if (raf) cancelAnimationFrame(raf); });
 .idea-icon { font-size: 30px; margin-bottom: 12px; }
 .idea-card h3 { margin: 0 0 8px; font-size: 18px; }
 .idea-card p { margin: 0; font-size: 14px; line-height: 1.8; opacity: .8; }
+
+.safety-note {
+  margin: 18px 0 0; text-align: center;
+  font-size: 13.5px; line-height: 1.8; opacity: .62;
+}
 
 /* 功能列表 */
 .feat-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
