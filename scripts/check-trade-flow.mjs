@@ -1438,6 +1438,41 @@ const eq = (label, actual, expected) =>
     '不然可以把競爭對手的徵求關掉，讓別人應徵不到'
   );
 
+  // 維護期間的分界：可以說「我想要這本書」，不能真的開始交易。
+  // 兩條一起驗，因為它們是同一個決定的兩半——只驗一半的話，哪天有人「順手」
+  // 把 inMaintenance() 補回 book_requests.create，測試不會有任何反應。
+  await setDoc(
+    'settings/trade',
+    { enforceSafeHours: true, maintenance: true, updatedAt: new Date() },
+    'owner'
+  );
+  expectAllowed(
+    '維護期間仍可發布徵求',
+    await setDoc('book_requests/req-maint', {
+      requesterId: seller.uid, requesterName: '徵求方', bookName: '維護中也想要',
+      college: '資訊電機學院', dept: '資訊工程學系', wantPrice: 150,
+      status: 'open', createdAt: new Date(),
+    }, seller.token),
+    '發布徵求不是交易，擋掉它只會製造一個說不出原因的死路'
+  );
+  expectDenied(
+    '維護期間不能應徵（那才是交易）',
+    await setDoc('orders/order-maint-wanted', {
+      buyerId: buyer.uid, buyerName: '提供方',
+      sellerId: seller.uid, sellerName: '徵求方',
+      productId: '', productName: '維護中也想要', productPrice: 150,
+      location: '圖書館前', time: '2026-08-20 14:00',
+      originalTime: '2026-08-20 14:00', status: 'pending', negotiationStep: 0,
+      mode: 'wanted', requestId: 'req-maint', createdAt: new Date(),
+    }, buyer.token),
+    'orders.create 的 !inMaintenance() 才是真正的煞車'
+  );
+  await setDoc(
+    'settings/trade',
+    { enforceSafeHours: true, maintenance: false, updatedAt: new Date() },
+    'owner'
+  );
+
   const wantedOrder = {
     buyerId: buyer.uid, buyerName: '提供方',
     sellerId: seller.uid, sellerName: '徵求方',

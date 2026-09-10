@@ -1,9 +1,14 @@
 <template>
   <div class="req-wrap">
     <!-- 發布徵求 -->
+    <!-- 發布徵求刻意不受維護開關影響：貼一則徵求不是交易，規則層也不擋。
+         會被維護擋住的是「我有這本書」，那條走 orders.create。 -->
     <button v-if="!composing" class="req-new-btn" @click="openCompose">
       ＋ 我要徵求一本書
     </button>
+    <p v-if="tradeMaintenance" class="req-maint-note">
+      🚧 交易功能維護中：現在仍可發布徵求，但要等維護結束才有人能應徵。
+    </p>
 
     <Transition name="req-slide">
       <form v-if="composing" class="req-form" @submit.prevent="submitRequest">
@@ -241,7 +246,13 @@ const submitRequest = async () => {
     resetForm();
   } catch (e) {
     console.error('[BookRequests] 發布失敗：', e.code, e.message);
-    toast('❌ 發布失敗，請稍後再試。');
+    // permission-denied 的可能原因就那幾種，直接列出來比「請稍後再試」有用：
+    // 再試一百次也不會補上少填的欄位。
+    if (e.code === 'permission-denied') {
+      toast('❌ 發布被拒絕：請確認願付金額是數字、學院與系所都已選擇。');
+    } else {
+      toast('❌ 發布失敗，請稍後再試。');
+    }
   } finally {
     submitting.value = false;
   }
@@ -322,6 +333,11 @@ onUnmounted(() => unsub?.());
   color: #2f4a3a; font-size: 14px; font-weight: 850; cursor: pointer;
 }
 .req-new-btn:active { background: #e8f2e9; }
+.req-maint-note {
+  margin: -6px 0 0; padding: 8px 12px; border-radius: 10px;
+  background: #fffaf3; border: 1px solid #ffd8b0;
+  font-size: 11.5px; font-weight: 700; color: #b26a00; line-height: 1.6;
+}
 
 /* ── 表單 ── */
 .req-form {

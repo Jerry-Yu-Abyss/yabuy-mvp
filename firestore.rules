@@ -360,8 +360,11 @@ service cloud.firestore {
         && request.resource.data.wantPrice is number
         && request.resource.data.wantPrice > 0
         && request.resource.data.wantPrice <= 10000
-        && !('closedAt' in request.resource.data)
-        && !inMaintenance();
+        && !('closedAt' in request.resource.data);
+        // 刻意不檢查 inMaintenance()：發布一則徵求不是交易，只是說出「我想要
+        // 這本書」。真正會推進交易狀態的是應徵，而那條路走的是 orders.create，
+        // 那裡已經擋住了。維護期間讓人先貼徵求、等維護結束再應徵沒有壞處，
+        // 反過來擋掉只會製造一個說不出原因的死路。
 
       // 貼文主人只能改內容或自己關掉，不能把 requesterId 換成別人
       allow update: if request.auth != null
