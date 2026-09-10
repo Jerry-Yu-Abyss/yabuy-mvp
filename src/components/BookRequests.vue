@@ -226,7 +226,12 @@ const submitRequest = async () => {
   try {
     // 沿用商品上架的 Storage 路徑慣例：products/{timestamp}-{uid}.jpg
     const path = `products/${Date.now()}-${user.uid}.jpg`;
-    const snap = await uploadBytes(sRef(storage, path), photoFile.value);
+    // 明確帶上 contentType：storage.rules 要求 image/*，而少數瀏覽器給出的
+    // File.type 是空字串，那會變成 application/octet-stream 而被規則擋下。
+    // 其他三處上傳都經過 canvas.toBlob(…, 'image/jpeg') 所以沒有這個問題。
+    const snap = await uploadBytes(sRef(storage, path), photoFile.value, {
+      contentType: photoFile.value.type || 'image/jpeg'
+    });
     const url = await getDownloadURL(snap.ref);
 
     // 刻意不存 requesterName。book_requests 任何登入者都讀得到，只把姓名從

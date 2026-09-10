@@ -1,0 +1,89 @@
+rules_version = '2';
+
+// YaBuy Storage 規則
+//
+// 這份檔案在 2026-09-10 之前不在版控裡，內容是：
+//     match /{allPaths=**} { allow read: if true; allow write: if request.auth != null; }
+// 兩行各有一個問題，而且都不是理論上的。
+//
+// ── 問題一：read 同時包含 list ──────────────────────────────────
+// Storage 的 `read` 涵蓋 `get`（下載單一檔案）與 `list`（列舉整個目錄）。
+// `allow read: if true` 等於**任何人不必登入就能列舉整個 bucket**。
+// 商品圖的檔名是 products/{timestamp}-{uid}.jpg——列舉一次就拿到全站每一個
+// 上傳者的 uid 與上傳時間。圖片本身要公開（首頁未登入也要看得到商品），
+// 但「能看單張圖」跟「能把全站清單拉下來」是兩件事，所以拆成 get / list。
+//
+// ── 問題二：任何登入者可以覆寫或刪除任何人的檔案 ────────────────
+// `allow write: if request.auth != null` 的 write 包含 create / update /
+// delete，而且沒有限定路徑。也就是任何一個註冊帳號都能：
+//   - 刪光全站所有商品圖與大頭貼
+//   - 把別人的商品圖覆寫成任意內容（那張圖仍然掛在對方的商品下）
+//   - 上傳任意大小、任意型別的檔案（沒有 size 與 contentType 限制）
+// 這是整個系統當時最弱的一環，比 Firestore 那幾條嚴重得多。
+//
+// ── 收緊後的原則 ───────────────────────────────────────────────
+// 1. 只開實際用到的三個路徑，其餘一律不放行
+// 2. 圖片可公開下載（get），但不可列舉（list）
+// 3. 只能寫自己的檔案——靠既有的檔名慣例判定擁有者
+// 4. 一律限制型別與大小
+// 5. delete 全部關閉：全專案沒有任何 deleteObject 呼叫，商品被管理員清除時
+//    走的是 Cloud Function 的 Admin SDK（繞過本規則），前端不需要刪檔能力
+//
+// ⚠️ 檔名慣例就是權限判定的依據，改動上傳路徑等於改動權限：
+//     products/{timestamp}-{uid}.jpg   Cam.vue（商品）、BookRequests.vue（徵求）
+//     avatars/{uid}.jpg                List.vue（大頭貼）
+//     ads/{timestamp}-{index}.jpg      Admin.vue（廣告，限管理員）
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    // 10MB：手機直拍的原圖可能到 8MB 以上（BookRequests 上傳的是未壓縮的原始
+    // 檔），設太小會擋掉正常使用者；設無上限則是讓人免費用我們的頻寬與空間。
+    function validImage() {
+      return request.resource.size <= 10 * 1024 * 1024
+          && request.resource.contentType.matches('image/.*');
+    }
+
+    // 商品圖與徵求書本照片。檔名結尾是 -{uid}.jpg，用它判定擁有者。
+    match /products/{fileName} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if signedIn() && validImage()
+        && fileName.matches('.*-' + request.auth.uid + '\\.jpg');
+      allow delete: if false;
+    }
+
+    // 大頭貼，檔名就是 uid。
+    match /avatars/{fileName} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if signedIn() && validImage()
+        && fileName == request.auth.uid + '.jpg';
+      allow delete: if false;
+    }
+
+    // 廣告圖。檔名不帶 uid（ads/{timestamp}-{index}.jpg），所以擁有者判定改用
+    // 管理員身分——這個路徑本來就只有管理端會寫。
+    match /ads/{fileName} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if isAdmin() && validImage();
+      allow delete: if isAdmin();
+    }
+
+    // 其餘路徑一律不開。Storage 的預設本來就是拒絕，這條的用意是把「只有上面
+    // 三個路徑是有效的」寫成明文——之後有人新增上傳路徑時，會先撞到這裡而不是
+    // 悄悄繼承一條寬鬆的萬用規則。
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
