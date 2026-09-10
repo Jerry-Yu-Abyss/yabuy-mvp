@@ -1048,6 +1048,43 @@ const eq = (label, actual, expected) =>
       { enforceSafeHours: true, maintenance: false, updatedAt: new Date() },
       OWNER2
     );
+
+    // ── onOrderClosed：訂單結束時排定清除對話 ──────────────────────
+    // 規則層那兩項驗的是「當事人不能自己寫 chatPurgeAt / chatPurged」，
+    // 驗不到「觸發器真的會寫」。少了這一條，onOrderClosed 整支從沒被載入過
+    // 也不會有人發現——而它正是「交易結束 24 小時後刪除對話」這個承諾的機制。
+    const PID = 'order-purge-schedule';
+    await setDoc(`orders/${PID}`, fnOrderBase, fnBuyer.token);
+    await updateDoc(`orders/${PID}`, { status: 'accepted' }, fnSeller.token);
+    const closedAtMs = Date.now();
+    await updateDoc(
+      `orders/${PID}`,
+      { status: 'rejected', lastActionBy: 'buyer' },
+      fnBuyer.token
+    );
+
+    let purgeDoc = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await getDoc(`orders/${PID}`, fnBuyer.token);
+      if (r.data?.chatPurgeAt) { purgeDoc = r.data; break; }
+      await new Promise((r2) => setTimeout(r2, 500));
+    }
+
+    if (!purgeDoc) {
+      bad(
+        '訂單結束時 onOrderClosed 會排定清除對話',
+        'chatPurgeAt 一直沒有被寫入。觸發器沒跑到，或它沒認得 rejected 這個終止態'
+      );
+    } else {
+      eq('結束的訂單被標記為尚未清除', purgeDoc.chatPurged, false);
+      const gapH = (new Date(purgeDoc.chatPurgeAt).getTime() - closedAtMs) / 3600000;
+      gapH > 23 && gapH < 25
+        ? ok('清除時間排在 24 小時後', `(+${gapH.toFixed(1)}h)`)
+        : bad(
+            '清除時間不是 24 小時後',
+            `實際排在 +${gapH.toFixed(1)} 小時。檢舉窗口靠這個間隔撐著，太短會讓事後檢舉拿不到對話`
+          );
+    }
   })();
 
   /* ─────────────────────────────────────────────────────────────

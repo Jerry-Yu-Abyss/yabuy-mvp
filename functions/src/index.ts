@@ -11,7 +11,12 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import * as crypto from "node:crypto";
 import * as admin from "firebase-admin";
-import {FieldValue} from "firebase-admin/firestore";
+// Timestamp 一定要從這裡具名匯入，不能寫 `admin.firestore.Timestamp`——
+// 那個運算式在這種 modular import 風格下是 undefined，TypeScript 卻編得過
+// （型別存在、執行期的值不存在），所以要等真的執行到那一行才會炸。
+// 2026-09-10：onOrderClosed 就是這樣在正式站上靜默失效的——每一筆結束的訂單
+// 都讓它拋 TypeError，chatPurgeAt 從來沒被寫進去，24 小時刪除對話等於沒有。
+import {FieldValue, Timestamp, DocumentData} from "firebase-admin/firestore";
 
 admin.initializeApp();
 
@@ -146,10 +151,10 @@ export const backfillUserDocs = onCall(async (request) => {
         status: "active",
         verify: resolveVerifyStatus(user),
         createdAt: creationTime ?
-          admin.firestore.Timestamp.fromDate(new Date(creationTime)) :
+          Timestamp.fromDate(new Date(creationTime)) :
           FieldValue.serverTimestamp(),
         lastLogin: lastSignInTime ?
-          admin.firestore.Timestamp.fromDate(new Date(lastSignInTime)) :
+          Timestamp.fromDate(new Date(lastSignInTime)) :
           FieldValue.serverTimestamp(),
         backfilled: true, // 標記為補建，方便日後追查來源
       });
@@ -189,7 +194,7 @@ const RANKING_COLLEGES = [
   "護理學院",
 ];
 
-const toMillis = (ts: admin.firestore.Timestamp | undefined): number | null => {
+const toMillis = (ts: Timestamp | undefined): number | null => {
   if (!ts) return null;
   return ts.toMillis();
 };
@@ -207,7 +212,7 @@ export const getRankingStats = onCall(async (request) => {
   ]);
 
   const orders = ordersSnap.docs.map((d) => d.data());
-  const users: Array<{id: string} & admin.firestore.DocumentData> =
+  const users: Array<{id: string} & DocumentData> =
     usersSnap.docs.map((d) => ({id: d.id, ...d.data()}));
   const products = productsSnap.docs.map((d) => d.data());
 
@@ -554,7 +559,7 @@ export const onOrderClosed = onDocumentUpdated(
     if (after.chatPurgeAt) return;
 
     await event.data?.after.ref.update({
-      chatPurgeAt: admin.firestore.Timestamp.fromMillis(
+      chatPurgeAt: Timestamp.fromMillis(
         Date.now() + CHAT_RETENTION_MS,
       ),
       chatPurged: false,
@@ -574,7 +579,7 @@ export const purgeClosedOrderMessages = onSchedule(
     // 需要 (chatPurged, chatPurgeAt) 複合索引（見 firestore.indexes.json）。
     const due = await db.collection("orders")
       .where("chatPurged", "==", false)
-      .where("chatPurgeAt", "<=", admin.firestore.Timestamp.now())
+      .where("chatPurgeAt", "<=", Timestamp.now())
       .limit(200)
       .get();
 
