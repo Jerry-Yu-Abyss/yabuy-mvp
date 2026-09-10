@@ -1,6 +1,5 @@
 <template>
   <div class="req-wrap">
-    <!-- 發布徵求 -->
     <!-- 發布徵求刻意不受維護開關影響：貼一則徵求不是交易，規則層也不擋。
          會被維護擋住的是「我有這本書」，那條走 orders.create。 -->
     <button v-if="!composing" class="req-new-btn" @click="openCompose">
@@ -80,7 +79,6 @@
             <span class="req-card-price">${{ r.wantPrice }}</span>
           </div>
           <p class="req-card-meta">{{ r.college }} · {{ r.dept }}</p>
-          <p class="req-card-who">徵求者：{{ r.requesterName || '同學' }}</p>
 
           <button
             v-if="isMine(r)"
@@ -231,9 +229,12 @@ const submitRequest = async () => {
     const snap = await uploadBytes(sRef(storage, path), photoFile.value);
     const url = await getDownloadURL(snap.ref);
 
+    // 刻意不存 requesterName。book_requests 任何登入者都讀得到，只把姓名從
+    // 畫面上拿掉、資料卻還留著的話，用 devtools 一樣撈得出全校誰在徵求什麼書。
+    // 需要查身分時管理員可以用 requesterId 反查 users，這條路不受影響。
+    // 與 CannedChat.vue 同一個原則：面交前不把姓名攤在陌生人面前。
     await addDoc(collection(db, 'book_requests'), {
       requesterId: user.uid,
-      requesterName: user.displayName || '同學',
       bookName: bookName.value.trim(),
       college: college.value,
       dept: dept.value,
@@ -294,7 +295,7 @@ const offerBook = async (r) => {
     price: r.wantPrice,
     url: r.url,
     sellerId: r.requesterId,
-    sellerName: r.requesterName || '徵求方',
+    sellerName: '徵求方',
     __requestId: r.id
   };
 };
@@ -409,7 +410,6 @@ onUnmounted(() => unsub?.());
 }
 .req-card-price { font-size: 15px; font-weight: 850; color: #b26a00; flex-shrink: 0; }
 .req-card-meta { margin: 0; font-size: 11.5px; color: #8a958d; }
-.req-card-who { margin: 0; font-size: 11.5px; color: #a8b2a9; }
 
 .req-card-btn {
   margin-top: auto; height: 36px; border: none; border-radius: 10px;

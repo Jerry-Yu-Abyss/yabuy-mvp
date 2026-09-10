@@ -344,6 +344,11 @@ service cloud.firestore {
     // 誰能關掉貼文：只有貼文主人自己，或 Cloud Function（Admin SDK 繞過規則，
     // onOrderClosed 成交時會關掉它）。應徵者不能關——不然有人可以把別人的徵求
     // 貼文關掉，讓其他競爭者應徵不到。
+    //
+    // ⚠️ 貼文刻意不存徵求者姓名。這裡是 `allow read: if request.auth != null`，
+    // 任何登入者都讀得到整個 collection——把姓名從畫面上拿掉但留在文件裡，
+    // 用 devtools 一樣撈得出「全校誰在徵求什麼書」。要查身分時管理員用
+    // requesterId 反查 users 即可，那條路不受影響。
     match /book_requests/{requestId} {
       allow read: if request.auth != null;
 
